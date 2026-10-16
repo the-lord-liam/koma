@@ -148,19 +148,28 @@ CREATE TABLE IF NOT EXISTS illust_versions (
 """
 
 
+class StoreError(RuntimeError):
+    """The library file cannot be opened."""
+
+
 class Store:
     def __init__(self, path: Path):
         path.parent.mkdir(parents=True, exist_ok=True)
-        self.conn = sqlite3.connect(str(path), check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.execute("PRAGMA foreign_keys = ON")
-        self._lock = threading.RLock()
-        self._tx = 0
-        self._pending: list[str] = []
-        with self._lock:
-            self.conn.executescript(SCHEMA)
-            self._migrate()
-            self.conn.commit()
+        try:
+            self.conn = sqlite3.connect(str(path), timeout=0.5, check_same_thread=False)
+            self.conn.row_factory = sqlite3.Row
+            self.conn.execute("PRAGMA foreign_keys = ON")
+            self._lock = threading.RLock()
+            self._tx = 0
+            self._pending: list[str] = []
+            with self._lock:
+                self.conn.executescript(SCHEMA)
+                self._migrate()
+                self.conn.commit()
+        except sqlite3.DatabaseError as error:
+            raise StoreError(
+                "Koma's library file is damaged. Move koma.sqlite aside and start again."
+            ) from error
 
     def _migrate(self) -> None:
         self._add_column("panels", "continue_prev", "INTEGER NOT NULL DEFAULT 0")
@@ -297,15 +306,33 @@ class Store:
             else:
                 unlink(path)
 
+    def _fail(self, error: sqlite3.Error) -> None:
+        if isinstance(error, sqlite3.OperationalError) and "locked" in str(error).lower():
+            raise ValueError(
+                "The library is open in another Koma window. Close it and try again."
+            ) from error
+        if isinstance(error, sqlite3.OperationalError):
+            raise ValueError("Koma could not save. The library may be damaged.") from error
+        raise ValueError(
+            "Koma's library file is damaged. Move koma.sqlite aside and start again."
+        ) from error
+
     def _write(self, sql: str, args: tuple | list = ()) -> None:
         with self._lock:
-            self.conn.execute(sql, args)
-            if self._tx == 0:
-                self.conn.commit()
+            try:
+                self.conn.execute(sql, args)
+                if self._tx == 0:
+                    self.conn.commit()
+            except sqlite3.Error as error:
+                self._fail(error)
 
     def _all(self, sql: str, args: tuple | list = ()) -> list[dict]:
         with self._lock:
-            return [dict(row) for row in self.conn.execute(sql, args).fetchall()]
+            try:
+                rows = self.conn.execute(sql, args).fetchall()
+            except sqlite3.Error as error:
+                self._fail(error)
+            return [dict(row) for row in rows]
 
     def _one(self, sql: str, args: tuple | list = ()) -> dict | None:
         rows = self._all(sql, args)

@@ -359,6 +359,59 @@ body[data-view="setup"] #main { height: 100%; }
 .quiet:hover { background: rgba(255, 255, 255, 0.08); }
 .danger-quiet { color: #ffb1a8; }
 
+.home-wrap {
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: #1c1c1e;
+}
+.library-search {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 16px 24px 0;
+  flex: none;
+}
+.library-search input {
+  flex: 1;
+  max-width: 420px;
+  background: #2c2c2e;
+  color: #f2f2f7;
+  border: 1px solid #3a3a3c;
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.library-search button {
+  background: #3a3a3c;
+  color: #f2f2f7;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 14px;
+}
+.search-hits {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px 24px 0;
+  max-height: 28vh;
+  overflow: auto;
+  flex: none;
+}
+.search-hits .hit {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+  background: #2c2c2e;
+  color: #f2f2f7;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 12px;
+}
+.search-hits .hit-detail { color: #8e8e93; font-size: 12px; }
+.search-hits .meta { padding: 4px 2px; }
 .studio {
   flex: 1;
   min-width: 0;
