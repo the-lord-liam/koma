@@ -93,6 +93,10 @@ git clone https://github.com/the-lord-liam/koma.git
 
 The repository is public. Use Fork on GitHub to start your own copy.
 
+## Make it your own
+
+You're welcome to fork Koma, but you don't have to stop there. Feel free to take the idea and the concept and run with them in your own projects, whether that's building your own manga studio from scratch or remixing pieces of this one. No need to ask. If Koma sparks something, I'd love to see what you make.
+
 ## License
 
 Koma is open source under the [MIT license](LICENSE). Fork it, change it, and share your version. The copyright notice in that file needs to stay with the copies you share.
