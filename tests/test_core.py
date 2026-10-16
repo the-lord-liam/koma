@@ -641,6 +641,81 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(Path(page_ref).exists())
         self.assertTrue(Path(copy_ref).is_file())
 
+    def test_duplicate_keeps_panel_references(self):
+        created = self.studio.project_create({"title": "Copy", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        chapter = self.studio.chapter_create({"projectId": project_id})["tree"]["chapters"][0]
+        page = self.studio.page_create({"chapterId": chapter["id"], "layout": "full"})["tree"]["chapters"][0]["pages"][0]
+        panel_id = page["panels"][0]["id"]
+        picture = Path(self.tmp.name) / "panel-ref.png"
+        Image.new("RGB", (8, 8), (3, 3, 3)).save(picture)
+        self.studio.import_ref({"owner": "panel", "id": panel_id, "kind": "reference", "path": str(picture)})
+        source_ref = self.store.list_refs("panel", panel_id)[0]["image_path"]
+        copied = self.studio.page_duplicate({"pageId": page["id"]})
+        twin = next(item for item in copied["tree"]["chapters"][0]["pages"] if item["id"] == copied["pageId"])
+        self.assertEqual(len(twin["panels"][0]["refs"]), 1)
+        copy_ref = self.store.list_refs("panel", twin["panels"][0]["id"])[0]["image_path"]
+        self.assertNotEqual(copy_ref, source_ref)
+        self.assertTrue(Path(copy_ref).is_file())
+        self.studio.page_delete({"id": page["id"]})
+        self.assertFalse(Path(source_ref).exists())
+        self.assertTrue(Path(copy_ref).is_file())
+
+    def test_delete_project_drops_rows_and_images(self):
+        created = self.studio.project_create({"title": "Gone", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        chapter = self.studio.chapter_create({"projectId": project_id})["tree"]["chapters"][0]
+        page = self.studio.page_create({"chapterId": chapter["id"], "layout": "full"})["tree"]["chapters"][0]["pages"][0]
+        self.studio.panel_draw({"id": page["panels"][0]["id"]})
+        picture = Path(self.tmp.name) / "keep.png"
+        Image.new("RGB", (8, 8), (4, 5, 6)).save(picture)
+        self.studio.import_ref({"owner": "page", "id": page["id"], "kind": "reference", "path": str(picture)})
+        self.studio.import_ref({"owner": "panel", "id": page["panels"][0]["id"], "kind": "reference", "path": str(picture)})
+        self.studio.page_sheet({"pageId": page["id"]})
+        page_ref = self.store.list_refs("page", page["id"])[0]["image_path"]
+        panel_ref = self.store.list_refs("panel", page["panels"][0]["id"])[0]["image_path"]
+        panel_art = self.store.get_panel(page["panels"][0]["id"])["image_path"]
+        preview = Path(os.environ["KOMA_DATA_DIR"]) / "previews" / f"{page['id']}.png"
+        self.assertTrue(preview.is_file())
+        self.studio.note_create({"projectId": project_id, "title": "Keep", "body": "x"})
+        bot = self.studio.bot_create({"projectId": project_id, "name": "Ada", "persona": "Editor"})
+        group = self.studio.group_create({"projectId": project_id, "title": "Room", "botIds": [bot["botId"]]})
+        self.studio.bot_send({"groupId": group["groupId"], "message": "Hi"})
+        self.assertGreater(len(self.store.list_volumes(project_id)), 0)
+        kept = self.studio.project_create({"title": "Kept", "premise": ""})
+        kept_id = kept["tree"]["project"]["id"]
+        kept_chapter = self.studio.chapter_create({"projectId": kept_id})["tree"]["chapters"][0]
+        self.studio.note_create({"projectId": kept_id, "title": "Stay", "body": "y"})
+        self.studio.project_delete({"id": project_id})
+        self.assertFalse(Path(page_ref).exists())
+        self.assertFalse(Path(panel_ref).exists())
+        self.assertFalse(Path(panel_art).exists())
+        self.assertFalse(preview.exists())
+        self.assertEqual(self.store.list_projects(), [self.store.get_project(kept_id)])
+        self.assertEqual(len(self.store.list_chapters(kept_id)), 1)
+        self.assertEqual(self.store.list_chapters(kept_id)[0]["id"], kept_chapter["id"])
+        self.assertEqual(len(self.store.list_notes(kept_id)), 1)
+        self.assertEqual(self.store.list_volumes(kept_id)[0]["title"], "Volume 1")
+        self.assertEqual(self.store._all("SELECT id FROM bots"), [])
+        self.assertEqual(self.store._all("SELECT id FROM bot_groups"), [])
+        self.assertEqual(self.store._all("SELECT id FROM bot_messages"), [])
+        self.assertEqual(self.store._all("SELECT group_id FROM bot_members"), [])
+        self.assertEqual(self.store._all("SELECT id FROM refs"), [])
+
+    def test_lettering_font_draws_japanese(self):
+        from PIL import ImageDraw
+
+        from koma.compose import font
+
+        def raster(face, text: str) -> bytes:
+            image = Image.new("L", (96, 72), 255)
+            ImageDraw.Draw(image).text((6, 6), text, font=face, fill=0)
+            return image.tobytes()
+
+        for bold in (False, True):
+            face = font(48, bold=bold)
+            self.assertNotEqual(raster(face, "あ"), raster(face, "い"))
+
 
 def render_silent(art: Path, target: Path) -> bytes:
     render_page(

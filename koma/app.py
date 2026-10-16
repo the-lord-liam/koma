@@ -335,7 +335,9 @@ def install_launcher() -> None:
 
 
 def _write_icon() -> Path:
-    from PIL import Image, ImageDraw, ImageFont
+    from PIL import Image, ImageDraw
+
+    from koma.compose import font
 
     folder = Path.home() / ".local" / "share" / "icons" / "hicolor" / "256x256" / "apps"
     folder.mkdir(parents=True, exist_ok=True)
@@ -343,8 +345,6 @@ def _write_icon() -> Path:
     image = Image.new("RGBA", (256, 256), (20, 18, 16, 255))
     draw = ImageDraw.Draw(image)
     draw.rounded_rectangle((18, 18, 238, 238), radius=52, fill=(226, 59, 43, 255))
-    font_path = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc")
-    face = ImageFont.truetype(str(font_path), 108, index=0) if font_path.exists() else ImageFont.load_default()
-    draw.text((128, 134), "コマ", font=face, fill="white", anchor="mm")
+    draw.text((128, 134), "コマ", font=font(108, bold=True), fill="white", anchor="mm")
     image.save(target)
     return target
