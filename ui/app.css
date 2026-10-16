@@ -1287,3 +1287,39 @@ body[data-studio="1"] input.tree-rename {
 .bot-compose { display: flex; gap: 8px; padding: 10px; border-top: 1px solid #3a3a3c; }
 .bot-compose textarea { flex: 1; min-height: 52px; }
 .bot-empty { padding: 28px; color: #d8d8de; }
+[data-drag] { -webkit-user-drag: element; }
+.dragging { opacity: 0.45; }
+.page-link.drag-over,
+.slot.drag-over { outline: 2px solid var(--gold); outline-offset: 2px; }
+#help {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+}
+.help-back {
+  position: absolute;
+  inset: 0;
+  border: 0;
+  background: rgba(0, 0, 0, 0.55);
+}
+.help-card {
+  position: relative;
+  z-index: 1;
+  width: min(440px, calc(100% - 32px));
+  background: #2c2c2e;
+  color: #f2f2f7;
+  border-radius: 12px;
+  padding: 18px 18px 14px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+.help-card h2 { margin: 0 0 10px; font-size: 18px; }
+.help-card ul { margin: 0 0 12px; padding-left: 18px; }
+.help-card li { margin: 5px 0; }
+.help-card kbd {
+  font-family: inherit;
+  background: #1c1c1e;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
