@@ -80,6 +80,7 @@ class Client:
         refs: list[str],
         *,
         resolution: str,
+        quality: str | None = None,
         model: str = IMAGE_MODEL,
     ) -> bytes:
         path, body = image_request(
@@ -88,6 +89,7 @@ class Client:
             refs,
             model=model,
             resolution=resolution,
+            quality=quality,
         )
         data = self._post(path, body, timeout=180)
         return _image_bytes(data)
@@ -100,6 +102,7 @@ def image_request(
     *,
     model: str,
     resolution: str,
+    quality: str | None = None,
 ) -> tuple[str, dict]:
     body: dict = {
         "model": model,
@@ -108,6 +111,8 @@ def image_request(
         "response_format": "b64_json",
         "resolution": resolution,
     }
+    if quality in {"low", "medium", "auto"}:
+        body["quality"] = quality
     if refs:
         body["images"] = [
             {"url": jpeg_data_uri(path), "type": "image_url"} for path in refs[:5]
