@@ -215,6 +215,82 @@ def assist_divide(slots: list[dict], x: float, y: float, angle: float) -> tuple[
     return divided, index, axis, _axis_gap(angle, axis) > 8
 
 
+def _overlaps(a: dict, b: dict) -> bool:
+    left = max(a["x"], b["x"])
+    top = max(a["y"], b["y"])
+    right = min(a["x"] + a["w"], b["x"] + b["w"])
+    bottom = min(a["y"] + a["h"], b["y"] + b["h"])
+    return right - left > 1e-4 and bottom - top > 1e-4
+
+
+def _clean_union(a: dict, b: dict) -> tuple[dict, float] | None:
+    """Union of two rectangles that share a full edge. The length is that edge."""
+    side_by_side = abs(a["y"] - b["y"]) < 1e-4 and abs(a["h"] - b["h"]) < 1e-4
+    touch_x = abs((a["x"] + a["w"]) - b["x"]) < 1e-4 or abs((b["x"] + b["w"]) - a["x"]) < 1e-4
+    if side_by_side and touch_x:
+        union = {
+            "x": min(a["x"], b["x"]),
+            "y": a["y"],
+            "w": a["w"] + b["w"],
+            "h": a["h"],
+        }
+        return union, a["h"]
+    stacked = abs(a["x"] - b["x"]) < 1e-4 and abs(a["w"] - b["w"]) < 1e-4
+    touch_y = abs((a["y"] + a["h"]) - b["y"]) < 1e-4 or abs((b["y"] + b["h"]) - a["y"]) < 1e-4
+    if stacked and touch_y:
+        union = {
+            "x": a["x"],
+            "y": min(a["y"], b["y"]),
+            "w": a["w"],
+            "h": a["h"] + b["h"],
+        }
+        return union, a["w"]
+    return None
+
+
+def _equal_rows(count: int) -> list[dict]:
+    slots = []
+    top = 0.0
+    for index in range(count):
+        height = 1 / count
+        if index == count - 1:
+            height = 1 - top
+        slots.append(_round_slot({"x": 0, "y": top, "w": 1, "h": height}))
+        top += 1 / count
+    return slots
+
+
+def reflow_after_delete(slots: list[dict], index: int) -> list[dict]:
+    """Fill the page after one frame is removed.
+
+    A neighbor that shares a full edge grows into the gap. Otherwise the
+    remaining frames are stacked in equal rows so nothing is left blank.
+    """
+    if len(slots) <= 1:
+        return [{"x": 0, "y": 0, "w": 1, "h": 1}]
+    removed = slots[index]
+    rest = [dict(slot) for slot in slots[:index] + slots[index + 1 :]]
+    if not rest:
+        return [{"x": 0, "y": 0, "w": 1, "h": 1}]
+    choice = None
+    best = -1.0
+    for position, slot in enumerate(rest):
+        merged = _clean_union(slot, removed)
+        if merged is None:
+            continue
+        union, length = merged
+        if any(_overlaps(union, other) for other_index, other in enumerate(rest) if other_index != position):
+            continue
+        if length > best:
+            best = length
+            choice = (position, union)
+    if choice is None:
+        return _equal_rows(len(rest))
+    position, union = choice
+    rest[position] = _round_slot(union)
+    return rest
+
+
 def catalog() -> list[dict]:
     items = []
     for key, (label, slots) in LAYOUTS.items():

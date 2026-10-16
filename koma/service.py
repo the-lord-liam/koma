@@ -8,6 +8,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import zipfile
 from collections.abc import Callable
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from koma.ai import AIError, Client
 from koma.compose import render_page
 from koma.config import load_config, public_settings, save_config
 from koma.formats import FormatError, catalog as format_catalog, project_pixels, resolve_format
-from koma.layouts import LAYOUTS, LayoutError, assist_divide, place, to_stored_line
+from koma.layouts import LAYOUTS, LayoutError, assist_divide, place, reflow_after_delete, to_stored_line
 from koma.media import media_url, save_image, unlink
 from koma.paths import data_dir, export_root, exports_dir, previews_dir, safe_slug
 from koma.prompts import (
@@ -96,6 +97,8 @@ class Studio:
         self.store = store
         self.client = client or Client(lambda: load_config()["api_key"])
         self.status = status or (lambda _text: None)
+        self._undo: dict[str, list[dict]] = {}
+        self._redo: dict[str, list[dict]] = {}
 
     def dispatch(self, method: str, params: dict | None):
         handler = ROUTES.get(method)
@@ -303,6 +306,112 @@ class Studio:
             )
         return items
 
+    def _remember(self, page_id: str) -> None:
+        stack = self._undo.setdefault(page_id, [])
+        stack.append(self._capture_page(page_id))
+        if len(stack) > 20:
+            del stack[:-20]
+        self._redo[page_id] = []
+
+    def _capture_page(self, page_id: str) -> dict:
+        page = self.store.get_page(page_id)
+        panels = []
+        for panel in self.store.list_panels(page_id):
+            image = None
+            path = panel.get("image_path") or ""
+            if path and Path(path).is_file():
+                image = Path(path).read_bytes()
+            refs = []
+            for ref in self.store.list_refs("panel", panel["id"]):
+                ref_path = ref.get("image_path") or ""
+                blob = Path(ref_path).read_bytes() if ref_path and Path(ref_path).is_file() else None
+                refs.append(
+                    {
+                        "kind": ref.get("kind") or "reference",
+                        "label": ref.get("label") or "",
+                        "prompt": ref.get("prompt") or "",
+                        "image": blob,
+                    }
+                )
+            panels.append(
+                {
+                    "id": panel["id"],
+                    "slot": int(panel["slot"]),
+                    "shot": panel.get("shot") or "medium",
+                    "angle": panel.get("angle") or "eye level",
+                    "expression": panel.get("expression") or "neutral",
+                    "composition": panel.get("composition") or "rule of thirds",
+                    "action": panel.get("action") or "",
+                    "dialogue": panel.get("dialogue") or "",
+                    "balloon": panel.get("balloon") or "round",
+                    "balloon_anchor": panel.get("balloon_anchor") or "tr",
+                    "sfx": panel.get("sfx") or "",
+                    "extra": panel.get("extra") or "",
+                    "character_ids": panel.get("character_ids") or "[]",
+                    "location_id": panel.get("location_id"),
+                    "continue_prev": int(panel.get("continue_prev") or 0),
+                    "prompt": panel.get("prompt") or "",
+                    "objects": panel.get("objects") or "[]",
+                    "vibe": panel.get("vibe") or "",
+                    "image": image,
+                    "refs": refs,
+                }
+            )
+        return {
+            "layout": page.get("layout") or "classic",
+            "slots_json": page.get("slots_json") or "",
+            "panels": panels,
+        }
+
+    def _restore_page(self, page_id: str, snap: dict) -> None:
+        self.store.wipe_panels(page_id)
+        slots_json = str(snap.get("slots_json") or "").strip()
+        layout = snap.get("layout") or "classic"
+        if slots_json:
+            self.store.set_page_slots(page_id, slots_json)
+            if layout != "custom":
+                self.store.update_page(page_id, {"layout": layout}, {"layout"})
+        else:
+            self.store.update_page(page_id, {"layout": layout}, {"layout"})
+            self.store.clear_page_slots(page_id)
+        for item in sorted(snap.get("panels") or [], key=lambda row: int(row["slot"])):
+            self.store.insert_panel(page_id, item)
+            if item.get("image"):
+                path = str(save_image(item["image"]))
+                self.store.add_version(item["id"], path, "", "Restored")
+            for ref in item.get("refs") or []:
+                if not ref.get("image"):
+                    continue
+                self.store.create_ref(
+                    "panel",
+                    item["id"],
+                    ref.get("kind") or "reference",
+                    ref.get("label") or "",
+                    str(save_image(ref["image"])),
+                    ref.get("prompt") or "",
+                )
+
+    def page_undo(self, params: dict) -> dict:
+        return self._step_history(params["pageId"], undo=True)
+
+    def page_redo(self, params: dict) -> dict:
+        return self._step_history(params["pageId"], undo=False)
+
+    def _step_history(self, page_id: str, *, undo: bool) -> dict:
+        page = self.store.get_page(page_id)
+        chapter = self.store.get_chapter(page["chapter_id"])
+        source = self._undo if undo else self._redo
+        target = self._redo if undo else self._undo
+        stack = source.get(page_id) or []
+        if not stack:
+            raise ValueError("Nothing to undo on this page." if undo else "Nothing to redo on this page.")
+        current = self._capture_page(page_id)
+        snap = stack.pop()
+        target.setdefault(page_id, []).append(current)
+        self._restore_page(page_id, snap)
+        self.store.touch(chapter["project_id"])
+        return self._pack(chapter["project_id"])
+
     def _panel_has_work(self, panel: dict) -> bool:
         if str(panel.get("image_path") or "").strip():
             return True
@@ -320,6 +429,7 @@ class Studio:
         if worked and not drop_extra:
             noun = "panel" if len(worked) == 1 else "panels"
             raise ValueError(f"This layout removes {len(worked)} {noun} with art or lettering.")
+        self._remember(page["id"])
         self.store.update_page(page["id"], {"layout": layout_id}, {"layout"})
         self.store.clear_page_slots(page["id"])
         for item in sorted(extras, key=lambda row: int(row["slot"]), reverse=True):
@@ -897,6 +1007,8 @@ class Studio:
             fields["location_id"] = location_id
         if "continuePrev" in params:
             fields["continue_prev"] = 1 if params.get("continuePrev") else 0
+        if any(key in params for key in ("dialogue", "balloon", "balloonAnchor", "sfx")):
+            self._remember(page["id"])
         self.store.update_panel(panel["id"], fields, set(fields))
         self.store.touch(project["id"])
         return self._pack(project["id"])
@@ -906,13 +1018,14 @@ class Studio:
         visible = self._panel_rows(page)
         if len(visible) < 2:
             raise ValueError("A page needs at least one panel.")
+        self._remember(page["id"])
         slots = _page_slots_ltr(page)
         if slots is None:
             layout = page["layout"] if page["layout"] in LAYOUTS else "classic"
             slots = [dict(item) for item in LAYOUTS[layout][1]]
         index = int(panel["slot"])
         if 0 <= index < len(slots):
-            slots = slots[:index] + slots[index + 1 :]
+            slots = reflow_after_delete(slots, index)
         self.store.delete_panel(panel["id"])
         self.store.set_page_slots(page["id"], json.dumps(slots))
         self.store.touch(project["id"])
@@ -928,6 +1041,7 @@ class Studio:
         swap = index + _direction(params.get("direction"))
         if swap < 0 or swap >= len(rows):
             return self._pack(project["id"])
+        self._remember(page["id"])
         first = rows[index]
         second = rows[swap]
         first_slot = int(first["slot"])
@@ -1338,6 +1452,12 @@ class Studio:
             raise ValueError("This chapter has no pages yet.")
         folder = exports_dir(project["title"])
         paths = [self._render(project, chapter, page) for page in pages]
+        if params.get("format") == "cbz":
+            cbz_path = folder / f"ch{chapter['idx'] + 1:02d}.cbz"
+            with zipfile.ZipFile(cbz_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for index, path in enumerate(paths, start=1):
+                    archive.write(path, f"{index:03d}{Path(path).suffix or '.png'}")
+            return {"path": str(cbz_path), "folder": str(folder)}
         if params.get("format") == "pdf":
             images = [Image.open(path).convert("RGB") for path in paths]
             pdf_path = folder / f"ch{chapter['idx'] + 1:02d}.pdf"
@@ -2203,6 +2323,8 @@ ROUTES = {
     "page.create": Studio.page_create,
     "page.update": Studio.page_update,
     "page.delete": Studio.page_delete,
+    "page.undo": Studio.page_undo,
+    "page.redo": Studio.page_redo,
     "page.move": Studio.page_move,
     "page.duplicate": Studio.page_duplicate,
     "page.divide": Studio.page_divide,
