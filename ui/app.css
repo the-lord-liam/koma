@@ -1112,6 +1112,17 @@ body[data-studio="1"] .settings { background: #1c1c1e; }
 .tool-strip button:hover { background: #2c2c2e; color: #f2f2f7; }
 .tool-strip button:disabled { opacity: 0.35; }
 .tool-strip button:disabled:hover { background: transparent; color: #8e8e93; }
+.page-link { display: flex; align-items: center; gap: 8px; text-align: left; }
+.page-thumb {
+  position: relative;
+  width: 22px;
+  height: 32px;
+  flex: none;
+  background: #f4f4f5;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.page-thumb .mini-slot { border-width: 1px; }
 .rail-tree {
   display: flex;
   flex-direction: column;
