@@ -696,6 +696,24 @@ class Store:
     def update_panel(self, panel_id: str, fields: dict, allowed: set[str]) -> None:
         self._update("panels", panel_id, fields, allowed)
 
+    def delete_panel(self, panel_id: str) -> None:
+        panel = self.get_panel(panel_id)
+        with self.batch():
+            paths = self.drop_owner_refs("panel", panel_id)
+            for version in self.list_versions(panel_id):
+                paths.append(version.get("image_path"))
+            if panel.get("image_path"):
+                paths.append(panel["image_path"])
+            self._write("DELETE FROM panels WHERE id = ?", (panel_id,))
+            later = self._all(
+                "SELECT id, slot FROM panels WHERE page_id = ? AND slot > ? ORDER BY slot",
+                (panel["page_id"], panel["slot"]),
+            )
+            for row in later:
+                self._write("UPDATE panels SET slot = ? WHERE id = ?", (int(row["slot"]) - 1, row["id"]))
+            for path in paths:
+                self._drop(path)
+
     def add_version(self, panel_id: str, image_path: str, prompt: str, note: str) -> dict:
         version_id = new_id()
         self._write(
