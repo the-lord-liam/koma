@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import hashlib
 import io
 import json
 import shutil
@@ -99,6 +100,7 @@ class Studio:
         self.status = status or (lambda _text: None)
         self._undo: dict[str, list[dict]] = {}
         self._redo: dict[str, list[dict]] = {}
+        self._history_ready: set[str] = set()
 
     def dispatch(self, method: str, params: dict | None):
         handler = ROUTES.get(method)
@@ -307,11 +309,13 @@ class Studio:
         return items
 
     def _remember(self, page_id: str) -> None:
+        self._ensure_history(page_id)
         stack = self._undo.setdefault(page_id, [])
         stack.append(self._capture_page(page_id))
         if len(stack) > 20:
             del stack[:-20]
         self._redo[page_id] = []
+        self._save_history(page_id)
 
     def _capture_page(self, page_id: str) -> dict:
         page = self.store.get_page(page_id)
@@ -398,6 +402,7 @@ class Studio:
         return self._step_history(params["pageId"], undo=False)
 
     def _step_history(self, page_id: str, *, undo: bool) -> dict:
+        self._ensure_history(page_id)
         page = self.store.get_page(page_id)
         chapter = self.store.get_chapter(page["chapter_id"])
         source = self._undo if undo else self._redo
@@ -408,9 +413,164 @@ class Studio:
         current = self._capture_page(page_id)
         snap = stack.pop()
         target.setdefault(page_id, []).append(current)
+        if len(target[page_id]) > 20:
+            del target[page_id][:-20]
         self._restore_page(page_id, snap)
+        self._save_history(page_id)
         self.store.touch(chapter["project_id"])
         return self._pack(chapter["project_id"])
+
+    def _history_root(self) -> Path:
+        path = data_dir() / "history"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def _ensure_history(self, page_id: str) -> None:
+        if page_id in self._history_ready:
+            return
+        self._history_ready.add(page_id)
+        path = self._history_root() / f"{page_id}.json"
+        if not path.is_file():
+            self._undo.setdefault(page_id, [])
+            self._redo.setdefault(page_id, [])
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            self._undo[page_id] = []
+            self._redo[page_id] = []
+            return
+        if not isinstance(data, dict):
+            self._undo[page_id] = []
+            self._redo[page_id] = []
+            return
+        self._undo[page_id] = [self._snap_in(item) for item in (data.get("undo") or []) if isinstance(item, dict)][-20:]
+        self._redo[page_id] = [self._snap_in(item) for item in (data.get("redo") or []) if isinstance(item, dict)][-20:]
+
+    def _save_history(self, page_id: str) -> None:
+        payload = {
+            "undo": [self._snap_out(item) for item in (self._undo.get(page_id) or [])[-20:]],
+            "redo": [self._snap_out(item) for item in (self._redo.get(page_id) or [])[-20:]],
+        }
+        path = self._history_root() / f"{page_id}.json"
+        try:
+            path.write_text(json.dumps(payload), encoding="utf-8")
+            self._gc_blobs()
+        except OSError:
+            return
+
+    def _drop_history(self, page_id: str, *, gc: bool = True) -> None:
+        self._undo.pop(page_id, None)
+        self._redo.pop(page_id, None)
+        self._history_ready.discard(page_id)
+        path = self._history_root() / f"{page_id}.json"
+        try:
+            path.unlink(missing_ok=True)
+            if gc:
+                self._gc_blobs()
+        except OSError:
+            return
+
+    def _blob_put(self, blob: bytes | None) -> str:
+        if not blob:
+            return ""
+        name = hashlib.sha256(blob).hexdigest()[:20] + ".bin"
+        folder = self._history_root() / "blobs"
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / name
+        if not target.exists():
+            target.write_bytes(blob)
+        return name
+
+    def _blob_get(self, name: str) -> bytes | None:
+        if not name or not isinstance(name, str):
+            return None
+        if "/" in name or "\\" in name or name.startswith("."):
+            return None
+        folder = (self._history_root() / "blobs").resolve()
+        path = (folder / name).resolve()
+        if path.parent != folder or not path.is_file():
+            return None
+        return path.read_bytes()
+
+    def _snap_out(self, snap: dict) -> dict:
+        panels = []
+        for panel in snap.get("panels") or []:
+            item = {key: value for key, value in panel.items() if key not in {"image", "refs"}}
+            item["image"] = self._blob_put(panel.get("image"))
+            item["refs"] = [
+                {
+                    "kind": ref.get("kind") or "reference",
+                    "label": ref.get("label") or "",
+                    "prompt": ref.get("prompt") or "",
+                    "image": self._blob_put(ref.get("image")),
+                }
+                for ref in (panel.get("refs") or [])
+            ]
+            panels.append(item)
+        return {
+            "layout": snap.get("layout") or "classic",
+            "slots_json": snap.get("slots_json") or "",
+            "panels": panels,
+        }
+
+    def _snap_in(self, raw: dict) -> dict:
+        panels = []
+        for panel in raw.get("panels") or []:
+            if not isinstance(panel, dict):
+                continue
+            item = dict(panel)
+            item["image"] = self._blob_get(str(panel.get("image") or ""))
+            refs = []
+            for ref in panel.get("refs") or []:
+                if not isinstance(ref, dict):
+                    continue
+                refs.append(
+                    {
+                        "kind": ref.get("kind") or "reference",
+                        "label": ref.get("label") or "",
+                        "prompt": ref.get("prompt") or "",
+                        "image": self._blob_get(str(ref.get("image") or "")),
+                    }
+                )
+            item["refs"] = refs
+            panels.append(item)
+        return {
+            "layout": raw.get("layout") or "classic",
+            "slots_json": raw.get("slots_json") or "",
+            "panels": panels,
+        }
+
+    def _gc_blobs(self) -> None:
+        root = self._history_root()
+        used: set[str] = set()
+        for path in root.glob("*.json"):
+            try:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            for stack in (data.get("undo") or [], data.get("redo") or []):
+                if not isinstance(stack, list):
+                    continue
+                for snap in stack:
+                    if not isinstance(snap, dict):
+                        continue
+                    for panel in snap.get("panels") or []:
+                        if not isinstance(panel, dict):
+                            continue
+                        if panel.get("image"):
+                            used.add(str(panel["image"]))
+                        for ref in panel.get("refs") or []:
+                            if isinstance(ref, dict) and ref.get("image"):
+                                used.add(str(ref["image"]))
+        folder = root / "blobs"
+        if not folder.is_dir():
+            return
+        for blob in folder.iterdir():
+            if blob.is_file() and blob.name not in used:
+                blob.unlink(missing_ok=True)
 
     def _panel_has_work(self, panel: dict) -> bool:
         if str(panel.get("image_path") or "").strip():
@@ -593,6 +753,8 @@ class Studio:
         self.store.delete_project(params["id"])
         for page_id in page_ids:
             self._drop_preview(page_id)
+            self._drop_history(page_id, gc=False)
+        self._gc_blobs()
         return self._gallery_payload()
 
     def story_send(self, params: dict) -> dict:
@@ -796,6 +958,8 @@ class Studio:
         self.store.delete_chapter(chapter["id"])
         for page_id in page_ids:
             self._drop_preview(page_id)
+            self._drop_history(page_id, gc=False)
+        self._gc_blobs()
         return self._pack(chapter["project_id"])
 
     def chapter_duplicate(self, params: dict) -> dict:
@@ -842,6 +1006,41 @@ class Studio:
                 )
             if len(hits) >= 40:
                 return {"hits": hits}
+            for person in self.store.list_characters(project["id"]):
+                hay = " ".join(
+                    str(person.get(key) or "")
+                    for key in ("name", "role", "personality", "appearance", "wardrobe")
+                )
+                if query not in hay.casefold():
+                    continue
+                hits.append(
+                    {
+                        "kind": "cast",
+                        "projectId": project["id"],
+                        "projectTitle": title,
+                        "characterId": person["id"],
+                        "label": person.get("name") or "Character",
+                        "detail": title,
+                    }
+                )
+                if len(hits) >= 40:
+                    return {"hits": hits}
+            for note in self.store.list_notes(project["id"]):
+                hay = f"{note.get('title') or ''} {note.get('body') or ''}"
+                if query not in hay.casefold():
+                    continue
+                hits.append(
+                    {
+                        "kind": "note",
+                        "projectId": project["id"],
+                        "projectTitle": title,
+                        "noteId": note["id"],
+                        "label": note.get("title") or "Note",
+                        "detail": title,
+                    }
+                )
+                if len(hits) >= 40:
+                    return {"hits": hits}
             for chapter in self.store.list_chapters(project["id"]):
                 chapter_title = chapter.get("title") or ""
                 if query in chapter_title.casefold():
@@ -925,12 +1124,20 @@ class Studio:
         chapter = self.store.get_chapter(page["chapter_id"])
         self.store.delete_page(page["id"])
         self._drop_preview(page["id"])
+        self._drop_history(page["id"])
         return self._pack(chapter["project_id"])
 
     def page_move(self, params: dict) -> dict:
         page = self.store.get_page(params["id"])
         chapter = self.store.get_chapter(page["chapter_id"])
         self.store.move("pages", "chapter_id", page["id"], _direction(params.get("direction")))
+        self.store.touch(chapter["project_id"])
+        return self._pack(chapter["project_id"])
+
+    def page_reorder(self, params: dict) -> dict:
+        chapter = self.store.get_chapter(params["chapterId"])
+        ids = [str(item) for item in (params.get("ids") or [])]
+        self.store.reorder("pages", "chapter_id", chapter["id"], ids)
         self.store.touch(chapter["project_id"])
         return self._pack(chapter["project_id"])
 
@@ -1135,6 +1342,25 @@ class Studio:
         self.store.update_panel(first["id"], {"slot": second_slot}, {"slot"})
         self.store.touch(project["id"])
         return self._pack(project["id"])
+
+    def panel_reorder(self, params: dict) -> dict:
+        page = self.store.get_page(params["pageId"])
+        chapter = self.store.get_chapter(page["chapter_id"])
+        rows = self._panel_rows(page)
+        current = [item["id"] for item in rows]
+        ids = [str(item) for item in (params.get("ids") or [])]
+        if len(ids) != len(set(ids)) or sorted(ids) != sorted(current):
+            raise ValueError("That order does not match the panels on this page.")
+        if ids == current:
+            return self._pack(chapter["project_id"])
+        self._remember(page["id"])
+        slots = [int(item["slot"]) for item in rows]
+        for offset, panel_id in enumerate(ids):
+            self.store.update_panel(panel_id, {"slot": -1 - offset}, {"slot"})
+        for slot, panel_id in zip(slots, ids):
+            self.store.update_panel(panel_id, {"slot": slot}, {"slot"})
+        self.store.touch(chapter["project_id"])
+        return self._pack(chapter["project_id"])
 
     def panel_preview(self, params: dict) -> dict:
         built, _project = self._panel_build(params["id"])
@@ -2418,12 +2644,14 @@ ROUTES = {
     "page.undo": Studio.page_undo,
     "page.redo": Studio.page_redo,
     "page.move": Studio.page_move,
+    "page.reorder": Studio.page_reorder,
     "page.duplicate": Studio.page_duplicate,
     "page.divide": Studio.page_divide,
     "page.suggest": Studio.page_suggest,
     "panel.update": Studio.panel_update,
     "panel.delete": Studio.panel_delete,
     "panel.move": Studio.panel_move,
+    "panel.reorder": Studio.panel_reorder,
     "panel.preview": Studio.panel_preview,
     "panel.draw": Studio.panel_draw,
     "panel.draw_empty": Studio.panel_draw_empty,
