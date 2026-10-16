@@ -58,6 +58,7 @@ const state = {
   botDraft: "",
   busy: false,
   status: "",
+  helpOpen: false,
 };
 
 const pending = new Map();
@@ -217,6 +218,7 @@ function render() {
   document.body.dataset.studio = inStudio() ? "1" : "0";
   document.getElementById("top").innerHTML = topHtml;
   document.getElementById("main").innerHTML = mainHtml;
+  paintHelp();
   syncWindowTitle();
   document.querySelectorAll("[data-save]").forEach((el) => {
     if ("value" in el) el.dataset.orig = el.value;
@@ -245,6 +247,36 @@ function render() {
   if (state.view === "pages" && state.panelId && state.pageTool === "lasso") refreshPreview();
 }
 
+function paintHelp() {
+  let layer = document.getElementById("help");
+  if (!state.helpOpen) {
+    if (layer) layer.remove();
+    return;
+  }
+  if (!layer) {
+    layer = document.createElement("div");
+    layer.id = "help";
+    document.getElementById("shell").appendChild(layer);
+  }
+  layer.innerHTML = `
+    <button type="button" class="help-back" data-act="close-help" aria-label="Close shortcuts"></button>
+    <div class="help-card" data-act="help-card">
+      <h2>Shortcuts</h2>
+      <ul>
+        <li><kbd>?</kbd> Show or hide this list</li>
+        <li><kbd>1</kbd>–<kbd>6</kbd> Lasso, Select, Text, Sketch, Effects, Imagine</li>
+        <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> Undo a page edit</li>
+        <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> Redo</li>
+        <li><kbd>[</kbd> <kbd>]</kbd> Move the selected panel earlier or later</li>
+        <li><kbd>Delete</kbd> Delete the selected panel</li>
+        <li><kbd>←</kbd> <kbd>→</kbd> Turn the page in Read</li>
+      </ul>
+      <p class="meta">Drag a page in the list, or a panel on the sheet, to reorder it. The Earlier and Later buttons do the same. The last 20 edits on a page stay on disk.</p>
+      <button type="button" class="ghost" data-act="close-help">Close</button>
+    </div>
+  `;
+}
+
 function inStudio() {
   if (!state.tree) return false;
   return ["story", "cast", "places", "pages", "read", "illust", "settings", "about"].includes(state.view);
@@ -265,6 +297,7 @@ function renderMenu() {
     ["menu-illust", "Illustrations", state.view === "illust"],
     ["menu-bot", "Grok bot", !!state.botOpen],
     ["menu-settings", "Settings", state.view === "settings"],
+    ["menu-help", "Shortcuts", !!state.helpOpen],
     ["menu-about", "About", state.view === "about"],
   ];
   const list = state.menuOpen ? `<div class="app-menu" role="menu">${items.map(([act, label, on]) => `
@@ -398,7 +431,7 @@ function renderHome() {
     : `<span class="board-sub">${esc(board.title || "Untitled")}</span>`;
   const picture = illust && illust.imageUrl ? `<img src="${esc(illust.imageUrl)}" alt="">` : "";
   const hits = (state.searchHits || []).map((hit) => `
-    <button type="button" class="hit" data-act="open-hit" data-project="${esc(hit.projectId)}" data-chapter="${esc(hit.chapterId || "")}" data-page="${esc(hit.pageId || "")}" data-panel="${esc(hit.panelId || "")}">
+    <button type="button" class="hit" data-act="open-hit" data-project="${esc(hit.projectId)}" data-chapter="${esc(hit.chapterId || "")}" data-page="${esc(hit.pageId || "")}" data-panel="${esc(hit.panelId || "")}" data-note="${esc(hit.noteId || "")}" data-character="${esc(hit.characterId || "")}">
       <span class="hit-label">${esc(hit.label)}</span>
       <span class="hit-detail">${esc(hit.detail || "")}</span>
     </button>
@@ -409,7 +442,7 @@ function renderHome() {
   return `
     <div class="home-wrap">
       <div class="library-search">
-        <input id="library-search" type="search" placeholder="Search titles, chapters, dialogue" value="${esc(state.searchQuery || "")}" ${state.busy ? "disabled" : ""}>
+        <input id="library-search" type="search" placeholder="Search titles, chapters, dialogue, notes, cast" value="${esc(state.searchQuery || "")}" ${state.busy ? "disabled" : ""}>
         <button type="button" data-act="search-library" ${state.busy ? "disabled" : ""}>Search</button>
       </div>
       ${results}
@@ -1249,7 +1282,7 @@ function pageOutline(project, vols) {
   const chapter = kids.find((item) => item.id === state.navChapterId) || kids[0] || null;
   const pages = chapter ? (chapter.pages || []).map((page) => `
     <div class="tree-node">
-      <button type="button" class="page-link ${page.id === state.pageId ? "on" : ""}" data-act="select-page" data-id="${esc(page.id)}">${pageThumb(page, project.reading)}<span>Page ${page.idx + 1}</span></button>
+      <button type="button" class="page-link ${page.id === state.pageId ? "on" : ""}" draggable="true" data-drag="page" data-chapter="${esc(chapter.id)}" data-act="select-page" data-id="${esc(page.id)}">${pageThumb(page, project.reading)}<span>Page ${page.idx + 1}</span></button>
       ${treePlus("add-page", chapter.id)}
     </div>
   `).join("") : "";
@@ -1316,6 +1349,7 @@ function renderPages() {
     <div class="rail-tree">
       ${pageOutline(project, vols)}
       <p class="rail-kicker">Page history</p>
+      <p class="meta">Drag a page or a panel to reorder it. Earlier and Later still work. Undo is kept after you quit.</p>
       <div class="row">
         <button type="button" class="ghost" data-act="undo-page" title="Undo (Ctrl+Z)">Undo</button>
         <button type="button" class="ghost" data-act="redo-page" title="Redo (Ctrl+Shift+Z)">Redo</button>
@@ -1360,7 +1394,7 @@ function pageStage(row, project) {
       ? `<div class="sfx ${item.balloonAnchor && item.balloonAnchor.startsWith("t") ? "low" : "high"}">${esc(item.sfx)}</div>`
       : "";
     return `
-      <button type="button" class="slot ${item.id === state.panelId ? "selected" : ""}" style="${style}${image}" data-act="select-panel" data-id="${esc(item.id)}">
+      <button type="button" class="slot ${item.id === state.panelId ? "selected" : ""}" draggable="true" data-drag="panel" style="${style}${image}" data-act="select-panel" data-id="${esc(item.id)}">
         ${item.imageUrl ? "" : `<span class="ph">${item.slot + 1}</span>`}
         ${balloon}${sfx}
       </button>
@@ -1674,7 +1708,7 @@ function renderRead() {
       <select data-act="pick-chapter">${options}</select>
     </label>
     <p class="meta">${esc(range)}</p>
-    <p class="meta">${esc(reading)}</p>
+    <p class="meta">${esc(reading)} Arrow keys turn the page.</p>
     <p class="meta">${empty ? `${empty} panels still empty` : "Every panel has a drawing"}</p>
     <div class="row">
       <button type="button" class="ghost" data-act="spread-step" data-dir="-1" ${state.spreadAt <= 0 ? "disabled" : ""}>Earlier</button>
@@ -1939,6 +1973,21 @@ const actions = {
     state.view = "about";
     render();
   },
+  "menu-help"() {
+    state.menuOpen = false;
+    state.helpOpen = true;
+    render();
+  },
+  "toggle-help"() {
+    state.helpOpen = !state.helpOpen;
+    state.menuOpen = false;
+    render();
+  },
+  "close-help"() {
+    state.helpOpen = false;
+    render();
+  },
+  "help-card"() {},
   "open-x"() {
     return rpc("shell.open_url", { url: "https://x.com/the_lord_liam" });
   },
@@ -2186,6 +2235,8 @@ const actions = {
     const pageId = button.dataset.page || "";
     const panelId = button.dataset.panel || "";
     const chapterId = button.dataset.chapter || "";
+    const noteId = button.dataset.note || "";
+    const characterId = button.dataset.character || "";
     return run("Opening…", async () => {
       absorb(await rpc("project.open", { id: projectId }));
       state.mangaId = projectId;
@@ -2199,6 +2250,17 @@ const actions = {
           state.navChapterId = row.chapter.id;
           state.navVolumeId = row.chapter.volumeId || null;
         }
+      } else if (characterId) {
+        state.view = "cast";
+        state.charId = characterId;
+        state.refId = null;
+      } else if (noteId) {
+        state.view = "story";
+        state.pageId = null;
+        state.panelId = null;
+        state.storyFocus = "notes";
+        state.storyFocusId = noteId;
+        state.storyNoteId = noteId;
       } else {
         state.view = "story";
         state.pageId = null;
@@ -3279,6 +3341,81 @@ document.addEventListener("wheel", (event) => {
   if (event.ctrlKey) event.preventDefault();
 }, { passive: false });
 
+const dragState = { kind: "", id: "" };
+
+function reorderIds(ids, fromId, toId) {
+  const next = ids.slice();
+  const from = next.indexOf(fromId);
+  const to = next.indexOf(toId);
+  if (from < 0 || to < 0 || from === to) return null;
+  const [item] = next.splice(from, 1);
+  next.splice(to, 0, item);
+  return next;
+}
+
+document.addEventListener("dragstart", (event) => {
+  const el = event.target.closest("[data-drag]");
+  if (!el || state.busy) {
+    event.preventDefault();
+    return;
+  }
+  dragState.kind = el.dataset.drag;
+  dragState.id = el.dataset.id;
+  event.dataTransfer.effectAllowed = "move";
+  event.dataTransfer.setData("text/plain", el.dataset.id);
+  el.classList.add("dragging");
+});
+
+document.addEventListener("dragover", (event) => {
+  const el = event.target.closest("[data-drag]");
+  if (!el || el.dataset.drag !== dragState.kind || !dragState.id || el.dataset.id === dragState.id) return;
+  if (dragState.kind === "page" && el.dataset.chapter) {
+    const source = document.querySelector(`[data-drag="page"][data-id="${dragState.id}"]`);
+    if (source && source.dataset.chapter !== el.dataset.chapter) return;
+  }
+  event.preventDefault();
+  document.querySelectorAll(".drag-over").forEach((node) => {
+    if (node !== el) node.classList.remove("drag-over");
+  });
+  el.classList.add("drag-over");
+});
+
+document.addEventListener("drop", (event) => {
+  const el = event.target.closest("[data-drag]");
+  document.querySelectorAll(".drag-over, .dragging").forEach((node) => node.classList.remove("drag-over", "dragging"));
+  if (!el || el.dataset.drag !== dragState.kind || !dragState.id) return;
+  event.preventDefault();
+  const fromId = dragState.id;
+  const kind = dragState.kind;
+  dragState.kind = "";
+  dragState.id = "";
+  if (kind === "page") {
+    const chapterId = el.dataset.chapter;
+    const ids = [...document.querySelectorAll(`[data-drag="page"][data-chapter="${chapterId}"]`)].map((node) => node.dataset.id);
+    const next = reorderIds(ids, fromId, el.dataset.id);
+    if (!next) return;
+    Promise.resolve(run("Moving…", async () => {
+      absorb(await rpc("page.reorder", { chapterId, ids: next }));
+      state.pageId = fromId;
+    })).catch((error) => toast(error.message || String(error)));
+    return;
+  }
+  const row = currentPage();
+  if (!row) return;
+  const next = reorderIds(row.page.panels.map((panel) => panel.id), fromId, el.dataset.id);
+  if (!next) return;
+  Promise.resolve(run("Moving…", async () => {
+    absorb(await rpc("panel.reorder", { pageId: row.page.id, ids: next }));
+    state.panelId = fromId;
+  })).catch((error) => toast(error.message || String(error)));
+});
+
+document.addEventListener("dragend", () => {
+  dragState.kind = "";
+  dragState.id = "";
+  document.querySelectorAll(".drag-over, .dragging").forEach((node) => node.classList.remove("drag-over", "dragging"));
+});
+
 document.addEventListener("click", (event) => {
   const button = event.target.closest("[data-act]");
   const insideMenu = event.target.closest(".menu-wrap");
@@ -3320,12 +3457,30 @@ document.addEventListener("input", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && state.helpOpen) {
+    state.helpOpen = false;
+    render();
+    return;
+  }
   if (event.key === "Escape" && state.menuOpen) {
     state.menuOpen = false;
     render();
     return;
   }
   const typing = event.target && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA" || event.target.tagName === "SELECT" || event.target.isContentEditable);
+  if (!typing && event.key === "?") {
+    event.preventDefault();
+    state.helpOpen = !state.helpOpen;
+    state.menuOpen = false;
+    render();
+    return;
+  }
+  if (!typing && !state.busy && state.view === "read" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
+    event.preventDefault();
+    const act = actions["spread-step"];
+    if (act) act({ dataset: { dir: event.key === "ArrowRight" ? "1" : "-1" } });
+    return;
+  }
   if (!typing && !state.busy && state.view === "pages" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
     event.preventDefault();
     const act = actions[event.shiftKey ? "redo-page" : "undo-page"];
