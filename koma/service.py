@@ -582,7 +582,7 @@ class Studio:
             if source == "reading" and value not in {"rtl", "ltr"}:
                 continue
             if source == "title" and not value:
-                continue
+                raise ValueError("Name the manga.")
             fields[dest] = value
         self.store.update_project(project_id, fields, set(fields))
         extra = {"mangaBoards": self._manga_boards()} if "title" in fields else {}
@@ -769,8 +769,9 @@ class Studio:
         fields = {}
         if "title" in params:
             title = _clip(params.get("title"), 160).strip()
-            if title:
-                fields["title"] = title
+            if not title:
+                raise ValueError("Name the chapter.")
+            fields["title"] = title
         if "synopsis" in params:
             fields["synopsis"] = _clip(params.get("synopsis"), 4000)
         if "beats" in params:
@@ -797,11 +798,88 @@ class Studio:
             self._drop_preview(page_id)
         return self._pack(chapter["project_id"])
 
+    def chapter_duplicate(self, params: dict) -> dict:
+        source = self.store.get_chapter(params["id"])
+        title = _clip(f"{(source.get('title') or 'Chapter').strip()} copy", 160)
+        created = self.store.create_chapter(
+            source["project_id"],
+            title,
+            source.get("synopsis") or "",
+            beats=source.get("beats") or "[]",
+            volume_id=source.get("volume_id") or None,
+        )
+        for page in self.store.list_pages(source["id"]):
+            self.page_duplicate({"pageId": page["id"], "chapterId": created["id"]})
+        chapters = [chapter["id"] for chapter in self.store.list_chapters(source["project_id"])]
+        chapters.remove(created["id"])
+        chapters.insert(chapters.index(source["id"]) + 1, created["id"])
+        self.store.reorder("chapters", "project_id", source["project_id"], chapters)
+        self.store.touch(source["project_id"])
+        return self._pack(source["project_id"], chapterId=created["id"])
+
     def chapter_move(self, params: dict) -> dict:
         chapter = self.store.get_chapter(params["id"])
         self.store.move("chapters", "project_id", chapter["id"], _direction(params.get("direction")))
         self.store.touch(chapter["project_id"])
         return self._pack(chapter["project_id"])
+
+    def library_search(self, params: dict) -> dict:
+        query = _clip(params.get("query"), 80).strip().casefold()
+        if not query:
+            return {"hits": []}
+        hits = []
+        for project in self.store.list_projects():
+            title = project.get("title") or ""
+            if query in title.casefold():
+                hits.append(
+                    {
+                        "kind": "title",
+                        "projectId": project["id"],
+                        "projectTitle": title,
+                        "label": title,
+                        "detail": "Manga",
+                    }
+                )
+            if len(hits) >= 40:
+                return {"hits": hits}
+            for chapter in self.store.list_chapters(project["id"]):
+                chapter_title = chapter.get("title") or ""
+                if query in chapter_title.casefold():
+                    hits.append(
+                        {
+                            "kind": "chapter",
+                            "projectId": project["id"],
+                            "projectTitle": title,
+                            "chapterId": chapter["id"],
+                            "label": chapter_title,
+                            "detail": title,
+                        }
+                    )
+                if len(hits) >= 40:
+                    return {"hits": hits}
+                for page in self.store.list_pages(chapter["id"]):
+                    for panel in self.store.list_panels(page["id"]):
+                        dialogue = panel.get("dialogue") or ""
+                        if query not in dialogue.casefold():
+                            continue
+                        snippet = " ".join(dialogue.split())
+                        if len(snippet) > 80:
+                            snippet = snippet[:77] + "..."
+                        hits.append(
+                            {
+                                "kind": "dialogue",
+                                "projectId": project["id"],
+                                "projectTitle": title,
+                                "chapterId": chapter["id"],
+                                "pageId": page["id"],
+                                "panelId": panel["id"],
+                                "label": snippet or dialogue,
+                                "detail": f"{title} · {chapter_title}",
+                            }
+                        )
+                        if len(hits) >= 40:
+                            return {"hits": hits}
+        return {"hits": hits}
 
     def page_create(self, params: dict) -> dict:
         chapter = self.store.get_chapter(params["chapterId"])
@@ -859,6 +937,11 @@ class Studio:
     def page_duplicate(self, params: dict) -> dict:
         source = self.store.get_page(params["pageId"])
         chapter = self.store.get_chapter(source["chapter_id"])
+        dest_id = str(params.get("chapterId") or chapter["id"])
+        dest = self.store.get_chapter(dest_id)
+        if dest["project_id"] != chapter["project_id"]:
+            raise ValueError("That chapter belongs to another book.")
+        chapter = dest
         slots_json = source.get("slots_json") or ""
         if str(slots_json).strip():
             layout = source["layout"] or "custom"
@@ -887,9 +970,10 @@ class Studio:
                 copied_path,
                 ref.get("prompt") or "",
             )
-        ordered = [page["id"] for page in self.store.list_pages(chapter["id"]) if page["id"] != created["id"]]
-        ordered.insert(ordered.index(source["id"]) + 1, created["id"])
-        self.store.reorder("pages", "chapter_id", chapter["id"], ordered)
+        if dest["id"] == source["chapter_id"]:
+            ordered = [page["id"] for page in self.store.list_pages(chapter["id"]) if page["id"] != created["id"]]
+            ordered.insert(ordered.index(source["id"]) + 1, created["id"])
+            self.store.reorder("pages", "chapter_id", chapter["id"], ordered)
         self._ensure_panels(created["id"], layout)
         count = _page_count(source)
         originals = {
@@ -1226,7 +1310,7 @@ class Studio:
             if key in params:
                 value = _clip(params.get(key), limit).strip() if key == "name" else _clip(params.get(key), limit)
                 if key == "name" and not value:
-                    continue
+                    raise ValueError("Name the character.")
                 fields[key] = value
         self.store.update_character(character["id"], fields, set(fields))
         self.store.touch(character["project_id"])
@@ -1438,34 +1522,40 @@ class Studio:
         return {"chapterId": chapter["id"], "sheets": sheets}
 
     def export_page(self, params: dict) -> dict:
-        page = self.store.get_page(params["pageId"])
-        chapter = self.store.get_chapter(page["chapter_id"])
-        project = self.store.get_project(chapter["project_id"])
-        path = self._render(project, chapter, page)
-        return {"path": str(path), "folder": str(path.parent)}
+        try:
+            page = self.store.get_page(params["pageId"])
+            chapter = self.store.get_chapter(page["chapter_id"])
+            project = self.store.get_project(chapter["project_id"])
+            path = self._render(project, chapter, page)
+            return {"path": str(path), "folder": str(path.parent)}
+        except OSError as error:
+            raise ValueError("Koma cannot write the export. The folder may be read-only.") from error
 
     def export_chapter(self, params: dict) -> dict:
-        chapter = self.store.get_chapter(params["chapterId"])
-        project = self.store.get_project(chapter["project_id"])
-        pages = self.store.list_pages(chapter["id"])
-        if not pages:
-            raise ValueError("This chapter has no pages yet.")
-        folder = exports_dir(project["title"])
-        paths = [self._render(project, chapter, page) for page in pages]
-        if params.get("format") == "cbz":
-            cbz_path = folder / f"ch{chapter['idx'] + 1:02d}.cbz"
-            with zipfile.ZipFile(cbz_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
-                for index, path in enumerate(paths, start=1):
-                    archive.write(path, f"{index:03d}{Path(path).suffix or '.png'}")
-            return {"path": str(cbz_path), "folder": str(folder)}
-        if params.get("format") == "pdf":
-            images = [Image.open(path).convert("RGB") for path in paths]
-            pdf_path = folder / f"ch{chapter['idx'] + 1:02d}.pdf"
-            images[0].save(pdf_path, save_all=True, append_images=images[1:])
-            for image in images:
-                image.close()
-            return {"path": str(pdf_path), "folder": str(folder)}
-        return {"path": str(paths[-1]), "folder": str(folder)}
+        try:
+            chapter = self.store.get_chapter(params["chapterId"])
+            project = self.store.get_project(chapter["project_id"])
+            pages = self.store.list_pages(chapter["id"])
+            if not pages:
+                raise ValueError("This chapter has no pages yet.")
+            folder = exports_dir(project["title"])
+            paths = [self._render(project, chapter, page) for page in pages]
+            if params.get("format") == "cbz":
+                cbz_path = folder / f"ch{chapter['idx'] + 1:02d}.cbz"
+                with zipfile.ZipFile(cbz_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                    for index, path in enumerate(paths, start=1):
+                        archive.write(path, f"{index:03d}{Path(path).suffix or '.png'}")
+                return {"path": str(cbz_path), "folder": str(folder)}
+            if params.get("format") == "pdf":
+                images = [Image.open(path).convert("RGB") for path in paths]
+                pdf_path = folder / f"ch{chapter['idx'] + 1:02d}.pdf"
+                images[0].save(pdf_path, save_all=True, append_images=images[1:])
+                for image in images:
+                    image.close()
+                return {"path": str(pdf_path), "folder": str(folder)}
+            return {"path": str(paths[-1]), "folder": str(folder)}
+        except OSError as error:
+            raise ValueError("Koma cannot write the export. The folder may be read-only.") from error
 
     def _panel_rows(self, page: dict) -> list[dict]:
         count = _page_count(page)
@@ -2319,7 +2409,9 @@ ROUTES = {
     "chapter.create": Studio.chapter_create,
     "chapter.update": Studio.chapter_update,
     "chapter.delete": Studio.chapter_delete,
+    "chapter.duplicate": Studio.chapter_duplicate,
     "chapter.move": Studio.chapter_move,
+    "library.search": Studio.library_search,
     "page.create": Studio.page_create,
     "page.update": Studio.page_update,
     "page.delete": Studio.page_delete,
