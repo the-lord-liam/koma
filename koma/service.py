@@ -807,6 +807,18 @@ class Studio:
                 },
                 script,
             )
+            for ref in self.store.list_refs("panel", original["id"]):
+                ref_path = ref.get("image_path")
+                if not ref_path or not Path(ref_path).is_file():
+                    continue
+                self.store.create_ref(
+                    "panel",
+                    panel["id"],
+                    ref.get("kind") or "reference",
+                    ref.get("label") or "",
+                    str(save_image(Path(ref_path).read_bytes())),
+                    ref.get("prompt") or "",
+                )
             path = original.get("image_path")
             if path and Path(path).is_file():
                 copies.append((panel["id"], path, original.get("current_version_id")))
