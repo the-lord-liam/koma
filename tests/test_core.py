@@ -957,6 +957,73 @@ class CoreTests(unittest.TestCase):
         self.assertIn("Could not reach", str(raised.exception))
         self.assertNotIn("secret-key-xyz", str(raised.exception))
 
+    def test_reorder_saved_undo_and_wider_search(self):
+        from koma.paths import data_dir
+        from koma.service import ROUTES
+
+        self.assertIn("page.reorder", ROUTES)
+        self.assertIn("panel.reorder", ROUTES)
+        created = self.studio.project_create({"title": "Order", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        chapter = self.studio.chapter_create({"projectId": project_id})["tree"]["chapters"][0]
+        self.studio.page_create({"chapterId": chapter["id"], "layout": "classic"})
+        made = self.studio.page_create({"chapterId": chapter["id"], "layout": "full"})
+        pages = made["tree"]["chapters"][0]["pages"]
+        classic_id, full_id = pages[0]["id"], pages[1]["id"]
+        flipped = self.studio.page_reorder({"chapterId": chapter["id"], "ids": [full_id, classic_id]})
+        ordered = flipped["tree"]["chapters"][0]["pages"]
+        self.assertEqual([item["id"] for item in ordered], [full_id, classic_id])
+        classic = next(item for item in ordered if item["id"] == classic_id)
+        ids = [item["id"] for item in classic["panels"]]
+        moved = self.studio.panel_reorder({"pageId": classic_id, "ids": [ids[2], ids[0], ids[1]]})
+        after = next(item for item in moved["tree"]["chapters"][0]["pages"] if item["id"] == classic_id)
+        self.assertEqual([item["id"] for item in after["panels"]], [ids[2], ids[0], ids[1]])
+        self.studio.page_undo({"pageId": classic_id})
+        restored = next(item for item in self.studio.page_redo({"pageId": classic_id})["tree"]["chapters"][0]["pages"] if item["id"] == classic_id)
+        self.assertEqual([item["id"] for item in restored["panels"]], [ids[2], ids[0], ids[1]])
+
+        lead = restored["panels"][0]["id"]
+        for index in range(25):
+            self.studio.panel_update({"id": lead, "dialogue": f"line {index}"})
+        history = data_dir() / "history" / f"{classic_id}.json"
+        raw = json.loads(history.read_text(encoding="utf-8"))
+        self.assertEqual(len(raw["undo"]), 20)
+        self.assertLess(history.stat().st_size, 80_000)
+        fresh = Studio(self.store, client=FakeClient())
+        undone = fresh.page_undo({"pageId": classic_id})
+        lead_row = next(
+            item
+            for item in next(page for page in undone["tree"]["chapters"][0]["pages"] if page["id"] == classic_id)["panels"]
+            if item["id"] == lead
+        )
+        self.assertEqual(lead_row["dialogue"], "line 23")
+
+        full = next(item for item in undone["tree"]["chapters"][0]["pages"] if item["id"] == full_id)
+        drawn_id = full["panels"][0]["id"]
+        self.studio.panel_draw({"id": drawn_id})
+        self.studio.panel_update({"id": drawn_id, "dialogue": "kept"})
+        old = self.store.get_panel(drawn_id)["image_path"]
+        Path(old).unlink()
+        again = Studio(self.store, client=FakeClient())
+        again.page_undo({"pageId": full_id})
+        panel = self.store.get_panel(drawn_id)
+        self.assertEqual(panel["dialogue"], "")
+        self.assertTrue(Path(panel["image_path"]).is_file())
+        self.assertNotEqual(panel["image_path"], old)
+
+        person = self.studio.character_create({"projectId": project_id})
+        char_id = person["tree"]["characters"][-1]["id"]
+        self.studio.character_update({"id": char_id, "name": "Aki🌙", "role": "runner"})
+        note = self.studio.note_create({"projectId": project_id, "title": "Pier", "body": "wet boards"})
+        other = self.studio.project_create({"title": "Quiet", "premise": ""})
+        cast_hits = self.studio.library_search({"query": "AKI"})
+        self.assertTrue(any(hit["kind"] == "cast" and hit["characterId"] == char_id for hit in cast_hits["hits"]))
+        note_hits = self.studio.library_search({"query": "wet boards"})
+        self.assertTrue(any(hit["kind"] == "note" and hit["noteId"] == note["noteId"] for hit in note_hits["hits"]))
+        self.assertFalse(any(hit["projectId"] == other["tree"]["project"]["id"] for hit in note_hits["hits"]))
+        self.studio.page_delete({"id": classic_id})
+        self.assertFalse(history.exists())
+
 
 def render_silent(art: Path, target: Path) -> bytes:
     render_page(
