@@ -38,6 +38,12 @@ Story uses the same chain: title, volume, chapter, and page. The properties for 
   <img src="docs/story.png" width="900" alt="Story view for Harbor, with the title selected">
 </p>
 
+About says who the studio is for. The age rating is Everyone.
+
+<p align="center">
+  <img src="docs/about.png" width="900" alt="About page: See an idea become pages, age rating Everyone">
+</p>
+
 ## Open it
 
 The first launch adds **Koma** to the app grid.
