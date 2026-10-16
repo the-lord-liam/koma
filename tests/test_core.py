@@ -851,6 +851,112 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(names, ["001.png"])
         self.assertGreater(Path(cbz["path"]).stat().st_size, 100)
 
+    def test_search_duplicate_chapter_and_failures(self):
+        import urllib.error
+        from unittest.mock import patch
+
+        from koma.ai import AIError, Client
+        from koma.service import ROUTES
+        from koma.store import StoreError
+
+        self.assertIn("library.search", ROUTES)
+        self.assertIn("chapter.duplicate", ROUTES)
+        prepared = self.studio.canvas_prepare(
+            {
+                "title": "港🌙" + ("あ" * 200),
+                "kind": "manga",
+                "preset": "b6",
+                "quality": "print",
+                "create": True,
+            }
+        )
+        project = prepared["tree"]["project"]
+        self.assertEqual(len(project["title"]), 120)
+        self.assertTrue(project["title"].startswith("港🌙"))
+        project_id = project["id"]
+        with self.assertRaises(ValueError) as raised:
+            self.studio.project_update({"id": project_id, "title": "   "})
+        self.assertIn("Name the manga.", str(raised.exception))
+        chapter = prepared["tree"]["chapters"][0]
+        page = chapter["pages"][0]
+        panel = page["panels"][0]
+        with self.assertRaises(ValueError) as raised:
+            self.studio.chapter_update({"id": chapter["id"], "title": " "})
+        self.assertIn("Name the chapter.", str(raised.exception))
+        self.studio.chapter_update({"id": chapter["id"], "title": "章" * 300})
+        self.assertEqual(len(self.store.get_chapter(chapter["id"])["title"]), 160)
+        person = self.studio.character_create({"projectId": project_id})
+        char_id = person["tree"]["characters"][-1]["id"]
+        with self.assertRaises(ValueError) as raised:
+            self.studio.character_update({"id": char_id, "name": " "})
+        self.assertIn("Name the character.", str(raised.exception))
+
+        self.studio.chapter_update({"id": chapter["id"], "title": "夜の港"})
+        self.studio.panel_update({"id": panel["id"], "dialogue": "こんにちは🎉"})
+        found = self.studio.library_search({"query": "🎉"})
+        self.assertTrue(any(hit["kind"] == "dialogue" and hit["panelId"] == panel["id"] for hit in found["hits"]))
+        named = self.studio.library_search({"query": "夜の港"})
+        self.assertTrue(any(hit["kind"] == "chapter" and hit["chapterId"] == chapter["id"] for hit in named["hits"]))
+        other = self.studio.project_create({"title": "Quiet", "premise": ""})
+        other_id = other["tree"]["project"]["id"]
+        self.assertFalse(any(hit["projectId"] == other_id for hit in self.studio.library_search({"query": "🎉"})["hits"]))
+        self.assertEqual(self.studio.library_search({"query": "  "}), {"hits": []})
+
+        copied = self.studio.chapter_duplicate({"id": chapter["id"]})
+        order = [item["id"] for item in copied["tree"]["chapters"]]
+        self.assertEqual(order[order.index(chapter["id"]) + 1], copied["chapterId"])
+        twin = next(item for item in copied["tree"]["chapters"] if item["id"] == copied["chapterId"])
+        self.assertIn("copy", twin["title"])
+        self.assertEqual(len(twin["pages"]), len(chapter["pages"]))
+        self.assertNotEqual(twin["pages"][0]["id"], page["id"])
+        self.assertEqual(twin["pages"][0]["panels"][0]["dialogue"], "こんにちは🎉")
+
+        missing = Path(self.tmp.name) / "gone.png"
+        self.store.update_panel(panel["id"], {"image_path": str(missing)}, {"image_path"})
+        exported = self.studio.export_page({"pageId": page["id"]})
+        self.assertTrue(Path(exported["path"]).is_file())
+        bad = Path(self.tmp.name) / "bad.png"
+        bad.write_bytes(b"not a png")
+        self.store.update_panel(panel["id"], {"image_path": str(bad)}, {"image_path"})
+        exported = self.studio.export_page({"pageId": page["id"]})
+        with Image.open(exported["path"]) as image:
+            self.assertEqual(image.format, "PNG")
+
+        blocker = Path(self.tmp.name) / "export-blocked"
+        blocker.write_text("nope", encoding="utf-8")
+        os.environ["KOMA_EXPORT_DIR"] = str(blocker)
+        try:
+            with self.assertRaises(ValueError) as raised:
+                self.studio.export_page({"pageId": page["id"]})
+            self.assertIn("cannot write", str(raised.exception).lower())
+        finally:
+            os.environ["KOMA_EXPORT_DIR"] = str(Path(self.tmp.name) / "export")
+
+        junk = Path(self.tmp.name) / "junk.sqlite"
+        junk.write_bytes(b"this is not a sqlite database")
+        with self.assertRaises(StoreError) as raised:
+            Store(junk)
+        self.assertIn("damaged", str(raised.exception).lower())
+
+        lock = sqlite3.connect(str(Path(self.tmp.name) / "studio.sqlite"), timeout=2)
+        lock.execute("BEGIN EXCLUSIVE")
+        try:
+            with self.assertRaises(ValueError) as raised:
+                self.studio.project_update({"id": project_id, "logline": "locked"})
+            self.assertIn("another", str(raised.exception).lower())
+        finally:
+            lock.rollback()
+            lock.close()
+
+        with self.assertRaises(AIError) as raised:
+            Client(lambda: "").imagine("a pier", "2:3", [], resolution="1k")
+        self.assertIn("API key", str(raised.exception))
+        with patch("koma.ai.urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+            with self.assertRaises(AIError) as raised:
+                Client(lambda: "secret-key-xyz").complete([{"role": "user", "content": "hi"}])
+        self.assertIn("Could not reach", str(raised.exception))
+        self.assertNotIn("secret-key-xyz", str(raised.exception))
+
 
 def render_silent(art: Path, target: Path) -> bytes:
     render_page(

@@ -397,8 +397,23 @@ function renderHome() {
       `).join("")}</select>`
     : `<span class="board-sub">${esc(board.title || "Untitled")}</span>`;
   const picture = illust && illust.imageUrl ? `<img src="${esc(illust.imageUrl)}" alt="">` : "";
+  const hits = (state.searchHits || []).map((hit) => `
+    <button type="button" class="hit" data-act="open-hit" data-project="${esc(hit.projectId)}" data-chapter="${esc(hit.chapterId || "")}" data-page="${esc(hit.pageId || "")}" data-panel="${esc(hit.panelId || "")}">
+      <span class="hit-label">${esc(hit.label)}</span>
+      <span class="hit-detail">${esc(hit.detail || "")}</span>
+    </button>
+  `).join("");
+  const results = state.searchHits
+    ? `<div class="search-hits">${hits || `<p class="meta">No matches.</p>`}</div>`
+    : "";
   return `
-    <div class="studio">
+    <div class="home-wrap">
+      <div class="library-search">
+        <input id="library-search" type="search" placeholder="Search titles, chapters, dialogue" value="${esc(state.searchQuery || "")}" ${state.busy ? "disabled" : ""}>
+        <button type="button" data-act="search-library" ${state.busy ? "disabled" : ""}>Search</button>
+      </div>
+      ${results}
+      <div class="studio">
       <div class="board-col">
         <button type="button" class="board-face" style="${boardStyle(board)}" data-act="open-manga" ${state.busy ? "disabled" : ""}>
           ${mangaFace(board)}
@@ -423,6 +438,7 @@ function renderHome() {
           </div>
           <button type="button" class="plus" data-act="new-illust" title="New illustration canvas" ${state.busy ? "disabled" : ""}>+</button>
         </div>
+      </div>
       </div>
     </div>
   `;
@@ -1142,6 +1158,7 @@ function storySide(project, volume, chapter, pageRow, note) {
         <select data-save="chapter" data-field="volumeId" data-entity="${esc(chapter.id)}">${options}</select>
       </label>
       <button type="button" class="ghost" data-act="add-page" data-id="${esc(chapter.id)}">Add page</button>
+      <button type="button" class="ghost" data-act="duplicate-chapter" data-id="${esc(chapter.id)}" ${state.busy ? "disabled" : ""}>Duplicate chapter</button>
       <div class="row">
         <button type="button" class="ghost" data-act="move-chapter" data-id="${esc(chapter.id)}" data-dir="-1">Up</button>
         <button type="button" class="ghost" data-act="move-chapter" data-id="${esc(chapter.id)}" data-dir="1">Down</button>
@@ -2133,6 +2150,70 @@ const actions = {
     if (!confirm("Delete this chapter and its pages?")) return;
     return run("Deleting…", async () => {
       absorb(await rpc("chapter.delete", { id: button.dataset.id }));
+    });
+  },
+  "duplicate-chapter"(button) {
+    return run("Copying the chapter…", async () => {
+      const result = await rpc("chapter.duplicate", { id: button.dataset.id });
+      absorb(result);
+      if (result.chapterId) {
+        state.storyFocus = "chapter";
+        state.storyFocusId = result.chapterId;
+        state.navChapterId = result.chapterId;
+        const created = chapters().find((item) => item.id === result.chapterId);
+        if (created) state.storyVolumeId = created.volumeId || state.storyVolumeId;
+      }
+      toast("Chapter copied, with its pages.", "ok");
+    });
+  },
+  "search-library"() {
+    const field = document.getElementById("library-search");
+    const query = field ? field.value.trim() : (state.searchQuery || "");
+    state.searchQuery = query;
+    if (!query) {
+      state.searchHits = null;
+      render();
+      return;
+    }
+    return run("Searching…", async () => {
+      const result = await rpc("library.search", { query });
+      state.searchHits = result.hits || [];
+      if (!state.searchHits.length) toast("Nothing matched that search.");
+    });
+  },
+  "open-hit"(button) {
+    const projectId = button.dataset.project;
+    const pageId = button.dataset.page || "";
+    const panelId = button.dataset.panel || "";
+    const chapterId = button.dataset.chapter || "";
+    return run("Opening…", async () => {
+      absorb(await rpc("project.open", { id: projectId }));
+      state.mangaId = projectId;
+      state.searchHits = null;
+      if (pageId) {
+        state.view = "pages";
+        state.pageId = pageId;
+        state.panelId = panelId || null;
+        const row = allPages().find((item) => item.page.id === pageId);
+        if (row) {
+          state.navChapterId = row.chapter.id;
+          state.navVolumeId = row.chapter.volumeId || null;
+        }
+      } else {
+        state.view = "story";
+        state.pageId = null;
+        state.panelId = null;
+        if (chapterId) {
+          state.storyFocus = "chapter";
+          state.storyFocusId = chapterId;
+          state.navChapterId = chapterId;
+          const chapter = chapters().find((item) => item.id === chapterId);
+          if (chapter) state.storyVolumeId = chapter.volumeId || null;
+        } else {
+          state.storyFocus = "title";
+          state.storyFocusId = "";
+        }
+      }
     });
   },
   "move-chapter"(button) {
@@ -3272,6 +3353,12 @@ document.addEventListener("keydown", (event) => {
       if (act) Promise.resolve(act({ dataset: { tool: toolKeys[toolIndex] } })).catch((error) => toast(error.message || String(error)));
       return;
     }
+  }
+  if (event.key === "Enter" && event.target && event.target.id === "library-search" && !state.busy) {
+    event.preventDefault();
+    const act = actions["search-library"];
+    if (act) Promise.resolve(act()).catch((error) => toast(error.message || String(error)));
+    return;
   }
   if (event.key !== "Enter" || state.view !== "setup" || state.busy) return;
   const target = event.target;

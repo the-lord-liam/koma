@@ -52,9 +52,13 @@ class Window:
         self._kept: list = []
         self.jobs: queue.Queue = queue.Queue()
         from koma.paths import db_path
-        from koma.store import Store
+        from koma.store import Store, StoreError
 
-        self.studio = Studio(Store(db_path()), status=self._status)
+        try:
+            library = Store(db_path())
+        except StoreError as error:
+            raise SystemExit(str(error)) from error
+        self.studio = Studio(library, status=self._status)
         self._worker = __import__("threading").Thread(target=self._work, daemon=True)
         self._worker.start()
 
