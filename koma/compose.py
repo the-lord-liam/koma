@@ -19,17 +19,40 @@ MARGIN = 42
 GUTTER = 16
 BORDER = 5
 
-_REGULAR = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc")
-_BOLD = Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc")
+# Noto CJK is the intended face. The other paths are common on Ubuntu when
+# that package is not installed. DejaVu cannot draw kana, so it is last.
+_CJK_BOLD = (
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc"),
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJKjp-Bold.otf"),
+    Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc"),
+)
+_CJK_REGULAR = (
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"),
+    Path("/usr/share/fonts/opentype/noto/NotoSansCJKjp-Regular.otf"),
+    Path("/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc"),
+    Path("/usr/share/fonts/truetype/droid/DroidSansFallbackFull.ttf"),
+    Path("/usr/share/fonts/truetype/wqy/wqy-microhei.ttc"),
+)
 _FALLBACK = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
 _FALLBACK_BOLD = Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf")
 
 
+def _first_font(paths: tuple[Path, ...]) -> Path | None:
+    for path in paths:
+        if path.is_file():
+            return path
+    return None
+
+
 def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
-    primary = _BOLD if bold else _REGULAR
-    backup = _FALLBACK_BOLD if bold else _FALLBACK
-    path = primary if primary.exists() else backup
-    if path.exists():
+    path = _first_font(_CJK_BOLD) if bold else None
+    if path is None:
+        path = _first_font(_CJK_REGULAR)
+    if path is None:
+        path = _FALLBACK_BOLD if bold else _FALLBACK
+        if not path.is_file():
+            path = _FALLBACK if _FALLBACK.is_file() else None
+    if path is not None:
         return ImageFont.truetype(str(path), size=size, index=0)
     return ImageFont.load_default()
 
@@ -232,8 +255,8 @@ def _burst(draw, rect, scale: float = 1.0) -> None:
     spikes = 16
     for i in range(spikes):
         angle = -math.pi / 2 + i * (2 * math.pi / spikes)
-        scale = 1.18 if i % 2 == 0 else 0.84
-        points.append((cx + math.cos(angle) * rx * scale, cy + math.sin(angle) * ry * scale))
+        spike = 1.18 if i % 2 == 0 else 0.84
+        points.append((cx + math.cos(angle) * rx * spike, cy + math.sin(angle) * ry * spike))
     draw.polygon(points, fill="white")
     draw.line(points + [points[0]], fill="black", width=_s(3, scale, 1))
 

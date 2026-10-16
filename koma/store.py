@@ -368,7 +368,38 @@ class Store:
 
     def delete_project(self, project_id: str) -> None:
         paths = self.project_image_paths(project_id)
-        self._write("DELETE FROM projects WHERE id = ?", (project_id,))
+        groups = [row["id"] for row in self.list_groups(project_id)]
+        bots = [row["id"] for row in self.list_bots(project_id)]
+        with self.batch():
+            for group_id in groups:
+                self._write("DELETE FROM bot_messages WHERE group_id = ?", (group_id,))
+                self._write("DELETE FROM bot_members WHERE group_id = ?", (group_id,))
+            for bot_id in bots:
+                self._write("DELETE FROM bot_members WHERE bot_id = ?", (bot_id,))
+            self._write("DELETE FROM bot_groups WHERE project_id = ?", (project_id,))
+            self._write("DELETE FROM bots WHERE project_id = ?", (project_id,))
+            self._write("DELETE FROM notes WHERE project_id = ?", (project_id,))
+            self._write("DELETE FROM volumes WHERE project_id = ?", (project_id,))
+            self._write(
+                """
+                DELETE FROM refs WHERE owner_id IN (
+                    SELECT id FROM characters WHERE project_id = ?
+                    UNION
+                    SELECT id FROM locations WHERE project_id = ?
+                    UNION
+                    SELECT pages.id FROM pages
+                    JOIN chapters ON chapters.id = pages.chapter_id
+                    WHERE chapters.project_id = ?
+                    UNION
+                    SELECT panels.id FROM panels
+                    JOIN pages ON pages.id = panels.page_id
+                    JOIN chapters ON chapters.id = pages.chapter_id
+                    WHERE chapters.project_id = ?
+                )
+                """,
+                (project_id, project_id, project_id, project_id),
+            )
+            self._write("DELETE FROM projects WHERE id = ?", (project_id,))
         for path in paths:
             self._drop(path)
 
@@ -378,6 +409,17 @@ class Store:
             SELECT image_path AS p FROM refs
               WHERE owner_id IN (SELECT id FROM characters WHERE project_id = ?)
                  OR owner_id IN (SELECT id FROM locations WHERE project_id = ?)
+                 OR owner_id IN (
+                      SELECT pages.id FROM pages
+                      JOIN chapters ON chapters.id = pages.chapter_id
+                      WHERE chapters.project_id = ?
+                 )
+                 OR owner_id IN (
+                      SELECT panels.id FROM panels
+                      JOIN pages ON pages.id = panels.page_id
+                      JOIN chapters ON chapters.id = pages.chapter_id
+                      WHERE chapters.project_id = ?
+                 )
             UNION
             SELECT image_path FROM panels
               WHERE page_id IN (
@@ -394,7 +436,7 @@ class Store:
                 WHERE chapters.project_id = ?
               )
             """,
-            (project_id, project_id, project_id, project_id),
+            (project_id, project_id, project_id, project_id, project_id, project_id),
         )
         return [row["p"] for row in rows if row["p"]]
 
