@@ -686,7 +686,9 @@ class CoreTests(unittest.TestCase):
         kept_id = kept["tree"]["project"]["id"]
         kept_chapter = self.studio.chapter_create({"projectId": kept_id})["tree"]["chapters"][0]
         self.studio.note_create({"projectId": kept_id, "title": "Stay", "body": "y"})
-        self.studio.project_delete({"id": project_id})
+        removed = self.studio.project_delete({"id": project_id})
+        self.assertEqual([item["id"] for item in removed["projects"]], [kept_id])
+        self.assertEqual([item["projectId"] for item in removed["mangaBoards"]], [kept_id])
         self.assertFalse(Path(page_ref).exists())
         self.assertFalse(Path(panel_ref).exists())
         self.assertFalse(Path(panel_art).exists())
@@ -715,6 +717,23 @@ class CoreTests(unittest.TestCase):
         for bold in (False, True):
             face = font(48, bold=bold)
             self.assertNotEqual(raster(face, "あ"), raster(face, "い"))
+
+    def test_export_slug_keeps_unicode_titles_apart(self):
+        from koma.paths import exports_dir, safe_slug
+
+        tide = safe_slug("潮")
+        harbor = safe_slug("港の夜")
+        self.assertNotEqual(tide, harbor)
+        self.assertNotEqual(tide, "manga")
+        self.assertNotIn("/", safe_slug("a/b\\c"))
+        self.assertEqual(safe_slug(""), "manga")
+        self.assertEqual(safe_slug(".."), "manga")
+        self.assertEqual(safe_slug("../etc"), "etc")
+        renamed = self.studio.project_update({"id": self.studio.project_create({"title": "港の夜", "premise": ""})["tree"]["project"]["id"], "title": "潮"})
+        self.assertEqual(renamed["mangaBoards"][0]["title"], "潮")
+        folder = exports_dir("潮")
+        self.assertEqual(folder.name, "潮")
+        self.assertNotEqual(exports_dir("港の夜").name, folder.name)
 
 
 def render_silent(art: Path, target: Path) -> bytes:

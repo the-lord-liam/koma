@@ -451,14 +451,15 @@ class Studio:
                 continue
             fields[dest] = value
         self.store.update_project(project_id, fields, set(fields))
-        return self._pack(project_id)
+        extra = {"mangaBoards": self._manga_boards()} if "title" in fields else {}
+        return self._pack(project_id, **extra)
 
     def project_delete(self, params: dict) -> dict:
         page_ids = self._page_ids(params["id"])
         self.store.delete_project(params["id"])
         for page_id in page_ids:
             self._drop_preview(page_id)
-        return {"projects": self._project_list()}
+        return self._gallery_payload()
 
     def story_send(self, params: dict) -> dict:
         project_id = params["projectId"]

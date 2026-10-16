@@ -48,8 +48,13 @@ def previews_dir() -> Path:
 
 
 def safe_slug(text: str) -> str:
-    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", text.strip()).strip("-")
-    return slug[:60] or "manga"
+    """Folder-safe name. Keeps letters from any language so two books do not share one export folder."""
+    cleaned = text.strip().replace("/", " ").replace("\\", " ")
+    cleaned = re.sub(r"[\x00-\x1f\x7f]", "", cleaned)
+    slug = re.sub(r"[^\w.\-]+", "-", cleaned, flags=re.UNICODE).strip("-._")
+    if not slug or slug in {".", ".."}:
+        return "manga"
+    return slug[:60]
 
 
 def export_root() -> Path:
