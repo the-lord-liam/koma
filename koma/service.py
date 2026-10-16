@@ -303,6 +303,29 @@ class Studio:
             )
         return items
 
+    def _panel_has_work(self, panel: dict) -> bool:
+        if str(panel.get("image_path") or "").strip():
+            return True
+        for key in ("dialogue", "sfx", "action", "prompt"):
+            if str(panel.get(key) or "").strip():
+                return True
+        if self.store.list_versions(panel["id"]):
+            return True
+        return bool(self.store.list_refs("panel", panel["id"]))
+
+    def _apply_named_layout(self, page: dict, layout_id: str, drop_extra: bool) -> None:
+        count = _slot_count(layout_id)
+        extras = [item for item in self.store.list_panels(page["id"]) if int(item["slot"]) >= count]
+        worked = [item for item in extras if self._panel_has_work(item)]
+        if worked and not drop_extra:
+            noun = "panel" if len(worked) == 1 else "panels"
+            raise ValueError(f"This layout removes {len(worked)} {noun} with art or lettering.")
+        self.store.update_page(page["id"], {"layout": layout_id}, {"layout"})
+        self.store.clear_page_slots(page["id"])
+        for item in sorted(extras, key=lambda row: int(row["slot"]), reverse=True):
+            self.store.delete_panel(item["id"])
+        self._ensure_panels(page["id"], layout_id)
+
     def _ensure_panels(self, page_id: str, layout: str | None = None) -> None:
         page = self.store.get_page(page_id)
         slots = _page_slots_ltr(page)
@@ -351,6 +374,7 @@ class Studio:
             aspect,
             refs,
             resolution=settings["resolution"],
+            quality=settings.get("quality") or "low",
         )
         return str(save_image(data))
 
@@ -695,16 +719,16 @@ class Studio:
                 if location["project_id"] != chapter["project_id"]:
                     location_id = None
             fields["location_id"] = location_id
-        if "layout" in params and params["layout"] in LAYOUTS:
-            fields["layout"] = params["layout"]
+        layout_id = params.get("layout") if params.get("layout") in LAYOUTS else None
         self.store.update_page(
             page["id"],
             fields,
             {"notes", "layout", "prompt", "character_ids", "location_id"},
         )
-        if "layout" in fields:
-            self.store.clear_page_slots(page["id"])
-            self._ensure_panels(page["id"], fields["layout"])
+        if layout_id and (layout_id != page["layout"] or str(page.get("slots_json") or "").strip()):
+            self._apply_named_layout(page, layout_id, bool(params.get("dropExtra")))
+        elif layout_id:
+            self._ensure_panels(page["id"], layout_id)
         self.store.touch(chapter["project_id"])
         return self._pack(chapter["project_id"])
 
@@ -874,6 +898,43 @@ class Studio:
         if "continuePrev" in params:
             fields["continue_prev"] = 1 if params.get("continuePrev") else 0
         self.store.update_panel(panel["id"], fields, set(fields))
+        self.store.touch(project["id"])
+        return self._pack(project["id"])
+
+    def panel_delete(self, params: dict) -> dict:
+        panel, page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
+        visible = self._panel_rows(page)
+        if len(visible) < 2:
+            raise ValueError("A page needs at least one panel.")
+        slots = _page_slots_ltr(page)
+        if slots is None:
+            layout = page["layout"] if page["layout"] in LAYOUTS else "classic"
+            slots = [dict(item) for item in LAYOUTS[layout][1]]
+        index = int(panel["slot"])
+        if 0 <= index < len(slots):
+            slots = slots[:index] + slots[index + 1 :]
+        self.store.delete_panel(panel["id"])
+        self.store.set_page_slots(page["id"], json.dumps(slots))
+        self.store.touch(project["id"])
+        return self._pack(project["id"])
+
+    def panel_move(self, params: dict) -> dict:
+        panel, page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
+        rows = self._panel_rows(page)
+        ids = [item["id"] for item in rows]
+        if panel["id"] not in ids:
+            return self._pack(project["id"])
+        index = ids.index(panel["id"])
+        swap = index + _direction(params.get("direction"))
+        if swap < 0 or swap >= len(rows):
+            return self._pack(project["id"])
+        first = rows[index]
+        second = rows[swap]
+        first_slot = int(first["slot"])
+        second_slot = int(second["slot"])
+        self.store.update_panel(first["id"], {"slot": -1}, {"slot"})
+        self.store.update_panel(second["id"], {"slot": first_slot}, {"slot"})
+        self.store.update_panel(first["id"], {"slot": second_slot}, {"slot"})
         self.store.touch(project["id"])
         return self._pack(project["id"])
 
@@ -1578,9 +1639,7 @@ class Studio:
                 from_grok = True
         if layout_id is None:
             layout_id = _suggest_layout(beats, actions)
-        self.store.update_page(page["id"], {"layout": layout_id}, {"layout"})
-        self.store.clear_page_slots(page["id"])
-        self._ensure_panels(page["id"], layout_id)
+        self._apply_named_layout(page, layout_id, bool(params.get("dropExtra")))
         self.store.touch(project["id"])
         return self._pack(
             project["id"],
@@ -2149,6 +2208,8 @@ ROUTES = {
     "page.divide": Studio.page_divide,
     "page.suggest": Studio.page_suggest,
     "panel.update": Studio.panel_update,
+    "panel.delete": Studio.panel_delete,
+    "panel.move": Studio.panel_move,
     "panel.preview": Studio.panel_preview,
     "panel.draw": Studio.panel_draw,
     "panel.draw_empty": Studio.panel_draw_empty,

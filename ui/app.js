@@ -181,6 +181,23 @@ function placed(layoutId, reading) {
   return slots.map((slot) => ({ ...slot, x: 1 - slot.x - slot.w }));
 }
 
+function pageThumb(page, reading) {
+  const slots = page.slots && page.slots.length ? page.slots : placed(page.layout || "classic", reading);
+  const images = {};
+  for (const panel of page.panels || []) images[panel.slot] = panel.imageUrl;
+  const faces = slots.map((slot, index) => {
+    const gap = 0.04;
+    const style = `left:${(slot.x + gap) * 100}%;top:${(slot.y + gap) * 100}%;width:${Math.max(8, (slot.w - gap * 2) * 100)}%;height:${Math.max(8, (slot.h - gap * 2) * 100)}%;`;
+    const image = images[index] ? `background-image:url('${esc(images[index])}')` : "";
+    return `<span class="mini-slot" style="${style}${image}"></span>`;
+  }).join("");
+  return `<span class="page-thumb" aria-hidden="true">${faces}</span>`;
+}
+
+function panelHasWork(panel) {
+  return !!(panel.imageUrl || String(panel.dialogue || "").trim() || String(panel.sfx || "").trim() || String(panel.action || "").trim() || String(panel.prompt || "").trim() || (panel.refs || []).length || (panel.versions || []).length);
+}
+
 function render() {
   const active = document.activeElement;
   let keep = null;
@@ -770,10 +787,15 @@ function renderSettings() {
         <button type="button" class="primary" data-act="save-key">Save key</button>
         <button type="button" class="danger" data-act="clear-key">Remove key</button>
       </div>
-      <p class="meta">1k is the cheaper size while you iterate. 2k is for finished pages.</p>
+      <p class="meta">1k is the cheaper size while you iterate. 2k is for finished pages. Low quality is cheaper; medium keeps more detail. Auto lets xAI choose.</p>
       <label class="field">Resolution
         <select data-save="settings" data-field="resolution" data-entity="">
-          ${["1k", "2k"].map((item) => `<option ${item === settings.resolution ? "selected" : ""}>${item}</option>`).join("")}
+          ${["1k", "2k"].map((item) => `<option value="${item}" ${item === settings.resolution ? "selected" : ""}>${item}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">Image quality
+        <select data-save="settings" data-field="quality" data-entity="">
+          ${[["low", "Low"], ["medium", "Medium"], ["auto", "Auto"]].map(([id, label]) => `<option value="${id}" ${id === settings.quality ? "selected" : ""}>${label}</option>`).join("")}
         </select>
       </label>
       <p class="meta">Projects live in ${esc(state.dataDir)}. Exports go to Documents/Koma.</p>
@@ -1168,7 +1190,7 @@ function storySide(project, volume, chapter, pageRow, note) {
 function storyOutline(project, volume, chapter) {
   const pages = chapter ? (chapter.pages || []).map((page) => `
     <div class="tree-node">
-      <button type="button" class="page-link ${state.storyFocus === "page" && page.id === state.storyFocusId ? "on" : ""}" data-act="story-focus" data-focus="page" data-id="${esc(page.id)}">Page ${page.idx + 1}</button>
+      <button type="button" class="page-link ${state.storyFocus === "page" && page.id === state.storyFocusId ? "on" : ""}" data-act="story-focus" data-focus="page" data-id="${esc(page.id)}">${pageThumb(page, project.reading)}<span>Page ${page.idx + 1}</span></button>
       ${treePlus("add-page", chapter.id)}
     </div>
   `).join("") : "";
@@ -1210,7 +1232,7 @@ function pageOutline(project, vols) {
   const chapter = kids.find((item) => item.id === state.navChapterId) || kids[0] || null;
   const pages = chapter ? (chapter.pages || []).map((page) => `
     <div class="tree-node">
-      <button type="button" class="page-link ${page.id === state.pageId ? "on" : ""}" data-act="select-page" data-id="${esc(page.id)}">Page ${page.idx + 1}</button>
+      <button type="button" class="page-link ${page.id === state.pageId ? "on" : ""}" data-act="select-page" data-id="${esc(page.id)}">${pageThumb(page, project.reading)}<span>Page ${page.idx + 1}</span></button>
       ${treePlus("add-page", chapter.id)}
     </div>
   `).join("") : "";
@@ -1372,7 +1394,14 @@ function toolDock(page, panel) {
   let props = `<p class="meta">${page ? "Select a panel." : "Add a page to start."}</p>`;
   if (page && state.pageTool === "imagine") props = imagineProps(page, panel);
   else if (panel) props = toolProps(panel);
-  return `<div class="tool-props" data-scroll="tools">${props}</div><div class="tool-strip">${strip}</div>`;
+  const moves = panel ? `
+    <div class="row">
+      <button type="button" class="ghost" data-act="move-panel" data-id="${esc(panel.id)}" data-dir="-1" title="Earlier panel ([)">Earlier</button>
+      <button type="button" class="ghost" data-act="move-panel" data-id="${esc(panel.id)}" data-dir="1" title="Later panel (])">Later</button>
+      <button type="button" class="danger quiet" data-act="delete-panel" data-id="${esc(panel.id)}" title="Delete panel (Delete)">Delete</button>
+    </div>
+  ` : "";
+  return `<div class="tool-props" data-scroll="tools">${moves}${props}</div><div class="tool-strip">${strip}</div>`;
 }
 
 function toolProps(panel) {
@@ -2123,6 +2152,30 @@ const actions = {
       state.navVolumeId = found.chapter.volumeId || state.navVolumeId;
     }
     render();
+  },
+  "delete-panel"(button) {
+    const id = button.dataset.id || state.panelId;
+    if (!id) return;
+    const row = currentPage();
+    const panel = row && row.page.panels.find((item) => item.id === id);
+    if (!panel) return;
+    if (row.page.panels.length < 2) {
+      toast("A page needs at least one panel.");
+      return;
+    }
+    const note = panelHasWork(panel) ? "Delete this panel and its art or lettering?" : "Delete this panel?";
+    if (!confirm(note)) return;
+    return run("Deleting the panel…", async () => {
+      absorb(await rpc("panel.delete", { id }));
+      if (state.panelId === id) state.panelId = null;
+    });
+  },
+  "move-panel"(button) {
+    const id = button.dataset.id || state.panelId;
+    if (!id) return;
+    return run("Moving the panel…", async () => {
+      absorb(await rpc("panel.move", { id, direction: Number(button.dataset.dir) }));
+    });
   },
   "select-panel"(button) {
     if (state.pageTool === "imagine" && state.panelId === button.dataset.id) {
@@ -3131,6 +3184,29 @@ document.addEventListener("keydown", (event) => {
     render();
     return;
   }
+  const typing = event.target && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA" || event.target.tagName === "SELECT" || event.target.isContentEditable);
+  if (!typing && !state.busy && state.view === "pages" && state.panelId) {
+    if (event.key === "Delete" || event.key === "Backspace") {
+      event.preventDefault();
+      const act = actions["delete-panel"];
+      if (act) Promise.resolve(act({ dataset: { id: state.panelId } })).catch((error) => toast(error.message || String(error)));
+      return;
+    }
+    if (event.key === "[" || event.key === "]") {
+      event.preventDefault();
+      const act = actions["move-panel"];
+      if (act) Promise.resolve(act({ dataset: { id: state.panelId, dir: event.key === "[" ? "-1" : "1" } })).catch((error) => toast(error.message || String(error)));
+      return;
+    }
+    const toolKeys = ["lasso", "select", "text", "sketch", "vfx", "imagine"];
+    const toolIndex = "123456".indexOf(event.key);
+    if (toolIndex >= 0) {
+      event.preventDefault();
+      const act = actions["pick-tool"];
+      if (act) Promise.resolve(act({ dataset: { tool: toolKeys[toolIndex] } })).catch((error) => toast(error.message || String(error)));
+      return;
+    }
+  }
   if (event.key !== "Enter" || state.view !== "setup" || state.busy) return;
   const target = event.target;
   if (!target || target.tagName === "TEXTAREA" || target.tagName === "SELECT") return;
@@ -3160,10 +3236,46 @@ document.addEventListener("change", (event) => {
     return;
   }
   if (!el.dataset || el.tagName !== "SELECT" || !el.dataset.save) return;
-  saveField(el.dataset.save, el.dataset.entity, el.dataset.field, el.value)
-    .then(() => render())
-    .catch((error) => toast(error.message));
+  const save = el.dataset.save === "page" && el.dataset.field === "layout"
+    ? savePageLayout(el)
+    : saveField(el.dataset.save, el.dataset.entity, el.dataset.field, el.value).then(() => render());
+  Promise.resolve(save).catch((error) => {
+    toast(error.message);
+    render();
+  });
 });
+
+async function savePageLayout(el) {
+  const row = allPages().find((item) => item.page.id === el.dataset.entity);
+  const next = el.value;
+  if (!row || next === "custom") {
+    render();
+    return;
+  }
+  const layout = (state.layouts || []).find((item) => item.id === next);
+  const count = layout ? layout.count : 1;
+  const extras = row.page.panels.filter((panel) => panel.slot >= count);
+  const worked = extras.filter(panelHasWork);
+  let dropExtra = false;
+  if (worked.length) {
+    const noun = worked.length === 1 ? "panel" : "panels";
+    if (!confirm(`Remove ${worked.length} ${noun} with art or lettering?`)) {
+      render();
+      return;
+    }
+    dropExtra = true;
+  }
+  try {
+    absorb(await rpc("page.update", { id: row.page.id, layout: next, dropExtra }));
+  } catch (error) {
+    if (!dropExtra && /art or lettering/.test(error.message || "") && confirm(error.message)) {
+      absorb(await rpc("page.update", { id: row.page.id, layout: next, dropExtra: true }));
+    } else {
+      throw error;
+    }
+  }
+  render();
+}
 
 async function boot() {
   const main = document.getElementById("main");

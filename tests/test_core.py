@@ -73,6 +73,7 @@ class FakeClient:
         if not hasattr(self, "prompts"):
             self.prompts = []
         self.prompts.append((prompt, aspect, list(refs)))
+        self.image_kwargs = dict(kwargs)
         image = Image.new("RGB", (32, 48), (180, 30, 30))
         buffer = io.BytesIO()
         image.save(buffer, format="PNG")
@@ -322,6 +323,25 @@ class CoreTests(unittest.TestCase):
         self.assertTrue(body["images"][0]["url"].startswith("data:image/jpeg;base64,"))
         self.assertNotIn("quality", body)
         self.assertNotIn("xai-", json.dumps(body))
+        _path, pinned = image_request(
+            "a panel",
+            "2:3",
+            [],
+            model="grok-imagine-image-2.0",
+            resolution="2k",
+            quality="medium",
+        )
+        self.assertEqual(pinned["quality"], "medium")
+        self.assertEqual(pinned["resolution"], "2k")
+        _path, skipped = image_request(
+            "a panel",
+            "2:3",
+            [],
+            model="grok-imagine-image-2.0",
+            resolution="1k",
+            quality="draft",
+        )
+        self.assertNotIn("quality", skipped)
 
     def test_page_lettering_and_reading_direction(self):
         red = Path(self.tmp.name) / "red.png"
@@ -734,6 +754,50 @@ class CoreTests(unittest.TestCase):
         folder = exports_dir("潮")
         self.assertEqual(folder.name, "潮")
         self.assertNotEqual(exports_dir("港の夜").name, folder.name)
+
+    def test_delete_move_and_shrink_panels(self):
+        from koma.config import save_config
+
+        created = self.studio.project_create({"title": "Panels", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        chapter = self.studio.chapter_create({"projectId": project_id})["tree"]["chapters"][0]
+        made = self.studio.page_create({"chapterId": chapter["id"], "layout": "classic"})
+        page = made["tree"]["chapters"][0]["pages"][0]
+        panels = page["panels"]
+        self.assertEqual(len(panels), 3)
+        self.studio.panel_update({"id": panels[2]["id"], "dialogue": "待って", "sfx": "ドン"})
+        with self.assertRaises(ValueError):
+            self.studio.page_update({"id": page["id"], "layout": "full"})
+        self.assertEqual(len(self.store.list_panels(page["id"])), 3)
+        dropped = self.studio.page_update({"id": page["id"], "layout": "full", "dropExtra": True})
+        left = next(item for item in dropped["tree"]["chapters"][0]["pages"] if item["id"] == page["id"])
+        self.assertEqual(left["layout"], "full")
+        self.assertEqual(len(left["panels"]), 1)
+        self.assertEqual(len(self.store.list_panels(page["id"])), 1)
+
+        wide = self.studio.page_create({"chapterId": chapter["id"], "layout": "v2"})
+        page = wide["tree"]["chapters"][0]["pages"][-1]
+        top, bottom = page["panels"]
+        self.studio.panel_draw({"id": top["id"]})
+        art = self.store.get_panel(top["id"])["image_path"]
+        self.assertTrue(Path(art).is_file())
+        save_config({"quality": "medium", "resolution": "2k"})
+        self.studio.panel_draw({"id": bottom["id"]})
+        self.assertEqual(self.studio.client.image_kwargs["quality"], "medium")
+        self.assertEqual(self.studio.client.image_kwargs["resolution"], "2k")
+        moved = self.studio.panel_move({"id": top["id"], "direction": 1})
+        ordered = next(item for item in moved["tree"]["chapters"][0]["pages"] if item["id"] == page["id"])["panels"]
+        self.assertEqual(ordered[1]["id"], top["id"])
+        self.assertEqual(self.store.get_panel(top["id"])["slot"], 1)
+        removed = self.studio.panel_delete({"id": top["id"]})
+        survivor = next(item for item in removed["tree"]["chapters"][0]["pages"] if item["id"] == page["id"])
+        self.assertEqual(survivor["layout"], "custom")
+        self.assertEqual(len(survivor["panels"]), 1)
+        self.assertEqual(survivor["panels"][0]["id"], bottom["id"])
+        self.assertFalse(Path(art).exists())
+        with self.assertRaises(ValueError):
+            self.studio.panel_delete({"id": bottom["id"]})
+        self.assertTrue(Path(self.store.get_panel(bottom["id"])["image_path"]).is_file())
 
 
 def render_silent(art: Path, target: Path) -> bytes:
