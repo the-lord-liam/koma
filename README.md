@@ -12,6 +12,32 @@
 
 Koma is a manga studio for Ubuntu. It opens on two canvases: a manga page, and a separate illustration. The manga side plans a series, keeps character designs locked to reference art, draws one panel at a time, letters the page in code, and exports chapters. The illustration side is one picture, with no panels.
 
+## What it looks like
+
+Home is two canvases. Manga opens the book. Illustration is one picture.
+
+<p align="center">
+  <img src="docs/home.png" width="900" alt="Home, with a manga canvas and an illustration canvas">
+</p>
+
+A new manga asks for the title, Japanese or Western, a page size, and the print resolution.
+
+<p align="center">
+  <img src="docs/setup.png" width="900" alt="Setup for Harbor, Japanese manga, B6, print at 300 dpi">
+</p>
+
+The page desk keeps the book on the left, the page in the middle, and the Imagine tools on the right.
+
+<p align="center">
+  <img src="docs/page.png" width="900" alt="Page view with panel 1 selected and the Imagine properties open">
+</p>
+
+Story uses the same chain: title, volume, chapter, and page. The properties for the selected row sit on the right.
+
+<p align="center">
+  <img src="docs/story.png" width="900" alt="Story view for Harbor, with the title selected">
+</p>
+
 ## Open it
 
 The first launch adds **Koma** to the app grid.
