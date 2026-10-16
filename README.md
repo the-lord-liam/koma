@@ -4,6 +4,10 @@
 
 Koma is a local manga studio for Ubuntu. It keeps the book, the drawings, and the API key on this machine. Home shows two canvases: a manga page, and a separate illustration. The manga side plans a series, keeps character designs locked to reference art, draws one panel at a time, letters the page in the app, and exports chapters. The illustration side is one picture, with no panels.
 
+## Privacy
+
+Koma has no telemetry, analytics, or tracking, and collects no data. Your books, drawings, and page undo stay in `~/.local/share/koma`. Settings and your API key stay in `~/.config/koma/config.json` (or in `XAI_API_KEY` if that is already set and the file has no key). Exported pages are written to `~/Documents/Koma/`. The only network traffic is when you use the AI features. Story planning and the bot send that text to xAI (`api.x.ai`) with your own key, and those requests ask xAI not to store them. Drawing sends the prompt and any reference images to the same API, and the picture comes back in the reply. If xAI returns a link to the picture instead, Koma downloads that link and nothing else. Nothing is sent anywhere else. The X button on the About page only opens [https://x.com/the_lord_liam](https://x.com/the_lord_liam) in your browser when you click it.
+
 ## What it looks like
 
 Home is two canvases, with a search field above them. Manga opens the book. Illustration is one picture.
