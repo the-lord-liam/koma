@@ -149,18 +149,21 @@ def render_page(
 def _paste_art(page: Image.Image, box, path: str | None, number: int, label_font) -> None:
     x, y, w, h = box
     if path and Path(path).exists():
-        with Image.open(path) as art:
-            art = art.convert("RGB")
-            scale = max(w / art.width, h / art.height)
-            resized = art.resize(
-                (max(1, round(art.width * scale)), max(1, round(art.height * scale))),
-                Image.Resampling.LANCZOS,
-            )
-            left = max(0, (resized.width - w) // 2)
-            top = max(0, (resized.height - h) // 2)
-            crop = resized.crop((left, top, left + w, top + h))
-            page.paste(crop, (x, y))
-        return
+        try:
+            with Image.open(path) as art:
+                art = art.convert("RGB")
+                scale = max(w / art.width, h / art.height)
+                resized = art.resize(
+                    (max(1, round(art.width * scale)), max(1, round(art.height * scale))),
+                    Image.Resampling.LANCZOS,
+                )
+                left = max(0, (resized.width - w) // 2)
+                top = max(0, (resized.height - h) // 2)
+                crop = resized.crop((left, top, left + w, top + h))
+                page.paste(crop, (x, y))
+            return
+        except OSError:
+            pass
     draw = ImageDraw.Draw(page)
     draw.rectangle([x, y, x + w - 1, y + h - 1], fill="#f3f3f3")
     draw.text((x + w / 2, y + h / 2), f"Panel {number}", font=label_font, fill="#b0b0b0", anchor="mm")
