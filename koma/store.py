@@ -714,6 +714,57 @@ class Store:
             for path in paths:
                 self._drop(path)
 
+    def wipe_panels(self, page_id: str) -> None:
+        panels = self.list_panels(page_id)
+        with self.batch():
+            paths: list[str] = []
+            for panel in panels:
+                paths.extend(self.drop_owner_refs("panel", panel["id"]))
+                for version in self.list_versions(panel["id"]):
+                    if version.get("image_path"):
+                        paths.append(version["image_path"])
+                if panel.get("image_path"):
+                    paths.append(panel["image_path"])
+                self._write("DELETE FROM panels WHERE id = ?", (panel["id"],))
+            for path in paths:
+                self._drop(path)
+
+    def insert_panel(self, page_id: str, fields: dict) -> dict:
+        panel_id = fields["id"]
+        self._write(
+            """INSERT INTO panels (
+                 id, page_id, slot, shot, angle, expression, composition, action,
+                 dialogue, balloon, balloon_anchor, sfx, extra, character_ids,
+                 location_id, created_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                panel_id,
+                page_id,
+                int(fields["slot"]),
+                fields.get("shot") or "medium",
+                fields.get("angle") or "eye level",
+                fields.get("expression") or "neutral",
+                fields.get("composition") or "rule of thirds",
+                fields.get("action") or "",
+                fields.get("dialogue") or "",
+                fields.get("balloon") or "round",
+                fields.get("balloon_anchor") or "tr",
+                fields.get("sfx") or "",
+                fields.get("extra") or "",
+                fields.get("character_ids") or "[]",
+                fields.get("location_id"),
+                now(),
+            ),
+        )
+        extra = {
+            "continue_prev": int(fields.get("continue_prev") or 0),
+            "prompt": fields.get("prompt") or "",
+            "objects": fields.get("objects") or "[]",
+            "vibe": fields.get("vibe") or "",
+        }
+        self.update_panel(panel_id, extra, set(extra))
+        return self.get_panel(panel_id)
+
     def add_version(self, panel_id: str, image_path: str, prompt: str, note: str) -> dict:
         version_id = new_id()
         self._write(
