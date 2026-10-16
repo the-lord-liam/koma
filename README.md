@@ -1,3 +1,13 @@
+<div align="center">
+
+# **THIS IS A CONCEPT**
+
+# **NOT A WORKING PRODUCT**
+
+# **IT WILL NOT WORK PROPERLY**
+
+</div>
+
 # Koma
 
 Koma is a manga studio for Ubuntu. It opens on two canvases: a manga page, and a separate illustration. The manga side plans a series, keeps character designs locked to reference art, draws one panel at a time, letters the page in code, and exports chapters. The illustration side is one picture, with no panels.
