@@ -799,6 +799,58 @@ class CoreTests(unittest.TestCase):
             self.studio.panel_delete({"id": bottom["id"]})
         self.assertTrue(Path(self.store.get_panel(bottom["id"])["image_path"]).is_file())
 
+    def test_undo_reflow_presets_and_cbz(self):
+        import zipfile
+
+        from koma.layouts import LAYOUTS, reflow_after_delete
+
+        classic = [dict(slot) for slot in LAYOUTS["classic"][1]]
+        grown = reflow_after_delete(classic, 1)
+        self.assertEqual(len(grown), 2)
+        right = max(grown, key=lambda slot: slot["x"])
+        self.assertAlmostEqual(right["h"], 1, places=2)
+        self.assertAlmostEqual(right["w"], 0.38, places=2)
+        stacked = reflow_after_delete(classic, 0)
+        self.assertEqual(len(stacked), 2)
+        self.assertAlmostEqual(sum(slot["w"] * slot["h"] for slot in stacked), 1, places=2)
+
+        created = self.studio.project_create({"title": "History", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        chapter = self.studio.chapter_create({"projectId": project_id})["tree"]["chapters"][0]
+        made = self.studio.page_create({"chapterId": chapter["id"], "layout": "classic"})
+        page = made["tree"]["chapters"][0]["pages"][0]
+        lead, second, _third = page["panels"]
+        self.studio.panel_update({"id": lead["id"], "dialogue": "走って", "balloon": "round"})
+        self.studio.panel_draw({"id": lead["id"]})
+        self.studio.panel_update({"id": lead["id"], "balloon": "shout", "balloonAnchor": "tr", "sfx": "ドン"})
+        lettered = self.studio.page_undo({"pageId": page["id"]})
+        undone = next(item for item in lettered["tree"]["chapters"][0]["pages"] if item["id"] == page["id"])
+        restored_lead = next(item for item in undone["panels"] if item["id"] == lead["id"])
+        self.assertEqual(restored_lead["balloon"], "round")
+        self.assertEqual(restored_lead["dialogue"], "走って")
+        self.assertEqual(restored_lead["sfx"], "")
+        self.studio.page_redo({"pageId": page["id"]})
+        self.studio.panel_delete({"id": second["id"]})
+        shrunk = self.studio.page_undo({"pageId": page["id"]})
+        back = next(item for item in shrunk["tree"]["chapters"][0]["pages"] if item["id"] == page["id"])
+        self.assertEqual(back["layout"], "classic")
+        self.assertEqual(len(back["panels"]), 3)
+        self.assertTrue(Path(self.store.get_panel(lead["id"])["image_path"]).is_file())
+        self.studio.panel_update({"id": page["panels"][2]["id"], "dialogue": "待って"})
+        self.studio.page_update({"id": page["id"], "layout": "full", "dropExtra": True})
+        self.assertEqual(len(self.store.list_panels(page["id"])), 1)
+        opened = self.studio.page_undo({"pageId": page["id"]})
+        full = next(item for item in opened["tree"]["chapters"][0]["pages"] if item["id"] == page["id"])
+        self.assertEqual(full["layout"], "classic")
+        self.assertEqual(len(full["panels"]), 3)
+
+        cbz = self.studio.export_chapter({"chapterId": chapter["id"], "format": "cbz"})
+        self.assertTrue(cbz["path"].endswith(".cbz"))
+        with zipfile.ZipFile(cbz["path"]) as archive:
+            names = archive.namelist()
+        self.assertEqual(names, ["001.png"])
+        self.assertGreater(Path(cbz["path"]).stat().st_size, 100)
+
 
 def render_silent(art: Path, target: Path) -> bytes:
     render_page(

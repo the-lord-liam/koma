@@ -1289,6 +1289,7 @@ function renderPages() {
         <div class="row">
           <button type="button" class="ghost" data-act="export-page" data-id="${esc(row.page.id)}">Export page</button>
           <button type="button" class="ghost" data-act="export-chapter" data-id="${esc(row.chapter.id)}" data-format="pdf">Chapter PDF</button>
+          <button type="button" class="ghost" data-act="export-chapter" data-id="${esc(row.chapter.id)}" data-format="cbz">Chapter CBZ</button>
         </div>
         <button type="button" class="danger quiet" data-act="delete-page" data-id="${esc(row.page.id)}">Delete page</button>
       </div>
@@ -1297,6 +1298,11 @@ function renderPages() {
   const rail = `
     <div class="rail-tree">
       ${pageOutline(project, vols)}
+      <p class="rail-kicker">Page history</p>
+      <div class="row">
+        <button type="button" class="ghost" data-act="undo-page" title="Undo (Ctrl+Z)">Undo</button>
+        <button type="button" class="ghost" data-act="redo-page" title="Redo (Ctrl+Shift+Z)">Redo</button>
+      </div>
       <p class="rail-kicker">Panel maker</p>
       <div class="row">
         <button type="button" class="ghost" data-act="suggest-layout" ${state.busy || !row ? "disabled" : ""}>Suggest</button>
@@ -1528,6 +1534,11 @@ function textProps(panel) {
   const vocab = state.vocab;
   return `
     <p class="rail-kicker">Text</p>
+    <div class="chips">
+      ${[["speech", "Speech"], ["shout", "Shout"], ["thought", "Thought"], ["caption", "Caption"]].map(([id, label]) => `
+        <button type="button" class="chip" data-act="balloon-preset" data-id="${esc(panel.id)}" data-preset="${id}">${label}</button>
+      `).join("")}
+    </div>
     <label class="field">Dialogue
       <textarea data-save="panel" data-field="dialogue" data-entity="${esc(panel.id)}">${esc(panel.dialogue)}</textarea>
     </label>
@@ -1655,6 +1666,7 @@ function renderRead() {
     <button type="button" class="ghost" data-act="draw-empty" data-scope="chapter" data-id="${esc(selected.id)}" ${state.busy ? "disabled" : ""}>Draw empty panels</button>
     <button type="button" class="ghost" data-act="reload-read" ${state.busy ? "disabled" : ""}>Refresh</button>
     <button type="button" class="ghost" data-act="export-chapter" data-id="${esc(selected.id)}" data-format="pdf">Chapter PDF</button>
+    <button type="button" class="ghost" data-act="export-chapter" data-id="${esc(selected.id)}" data-format="cbz">Chapter CBZ</button>
   `;
   const stage = pages.length
     ? `<div class="stage"><div class="spread">${spreadLeaves(pages, state.spreadAt, state.tree.project.reading).map((page) => readLeaf(page)).join("")}</div></div>`
@@ -1751,8 +1763,23 @@ async function saveField(kind, id, field, value) {
     group: "group.update",
   }[kind];
   const params = kind === "settings" ? { [field]: payloadValue } : { id, [field]: payloadValue };
-  absorb(await rpc(method, params));
+  setStatus("Saving…");
+  try {
+    absorb(await rpc(method, params));
+  } catch (error) {
+    setStatus("");
+    throw error;
+  }
   if (kind === "project" && field === "title") syncWindowTitle();
+  flashStatus("Saved");
+}
+
+function flashStatus(text) {
+  setStatus(text);
+  clearTimeout(flashStatus._t);
+  flashStatus._t = setTimeout(() => {
+    if (state.status === text) setStatus("");
+  }, 1400);
 }
 
 const actions = {
@@ -2152,6 +2179,39 @@ const actions = {
       state.navVolumeId = found.chapter.volumeId || state.navVolumeId;
     }
     render();
+  },
+  "undo-page"() {
+    const row = currentPage();
+    if (!row) return;
+    return run("Undoing…", async () => {
+      absorb(await rpc("page.undo", { pageId: row.page.id }));
+      return true;
+    }).then((result) => {
+      if (result) flashStatus("Undone");
+    });
+  },
+  "redo-page"() {
+    const row = currentPage();
+    if (!row) return;
+    return run("Redoing…", async () => {
+      absorb(await rpc("page.redo", { pageId: row.page.id }));
+      return true;
+    }).then((result) => {
+      if (result) flashStatus("Redone");
+    });
+  },
+  "balloon-preset"(button) {
+    const presets = {
+      speech: { balloon: "round", balloonAnchor: "tr" },
+      shout: { balloon: "shout", balloonAnchor: "tr" },
+      thought: { balloon: "thought", balloonAnchor: "tl" },
+      caption: { balloon: "caption", balloonAnchor: "tl" },
+    };
+    const preset = presets[button.dataset.preset];
+    if (!preset) return;
+    return run("Saving the balloon…", async () => {
+      absorb(await rpc("panel.update", { id: button.dataset.id, ...preset }));
+    });
   },
   "delete-panel"(button) {
     const id = button.dataset.id || state.panelId;
@@ -3185,6 +3245,12 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   const typing = event.target && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA" || event.target.tagName === "SELECT" || event.target.isContentEditable);
+  if (!typing && !state.busy && state.view === "pages" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+    event.preventDefault();
+    const act = actions[event.shiftKey ? "redo-page" : "undo-page"];
+    if (act) Promise.resolve(act()).catch((error) => toast(error.message || String(error)));
+    return;
+  }
   if (!typing && !state.busy && state.view === "pages" && state.panelId) {
     if (event.key === "Delete" || event.key === "Backspace") {
       event.preventDefault();
