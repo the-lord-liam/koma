@@ -285,7 +285,8 @@ function renderTop() {
     ].map(([view, label]) => `
       <button type="button" class="${state.view === view ? "on" : ""}" data-act="nav" data-view="${view}">${label}</button>
     `).join("");
-    return `<nav class="tools">${tools}</nav><span class="grow"></span>${status}${menu}`;
+    const back = `<button type="button" class="quiet" data-act="go-home">Canvases</button>`;
+    return `${back}<nav class="tools">${tools}</nav><span class="grow"></span>${status}${menu}`;
   }
   const back = `<button type="button" class="quiet" data-act="go-home">Canvases</button>`;
   if (state.view === "illust") {
@@ -390,6 +391,7 @@ function renderHome() {
             <span class="board-name">Manga</span>
             ${series}
           </div>
+          ${board.projectId ? `<button type="button" class="quiet danger-quiet" data-act="delete-manga" data-id="${esc(board.projectId)}" ${state.busy ? "disabled" : ""}>Delete</button>` : ""}
           <button type="button" class="plus" data-act="new-manga" title="New manga canvas" ${state.busy ? "disabled" : ""}>+</button>
         </div>
       </div>
@@ -804,6 +806,34 @@ function volumes() {
   return state.tree && state.tree.volumes ? state.tree.volumes : [];
 }
 
+function volumeSelect(act, currentId) {
+  const list = volumes();
+  if (list.length < 2) return "";
+  const options = list.map((item) => {
+    const name = (item.title || "").trim() || "Volume";
+    return `<option value="${esc(item.id)}" ${item.id === currentId ? "selected" : ""}>${esc(name)}</option>`;
+  }).join("");
+  return `<label class="field">Volume<select data-act="${act}">${options}</select></label>`;
+}
+
+function focusVolume(id) {
+  state.navVolumeId = id;
+  state.storyVolumeId = id;
+  const kids = chapters().filter((item) => item.volumeId === id);
+  state.navChapterId = kids[0] ? kids[0].id : null;
+  const page = kids[0] && kids[0].pages && kids[0].pages[0];
+  if (page) {
+    state.pageId = page.id;
+    state.panelId = null;
+    if (state.storyFocus === "page") state.storyFocusId = page.id;
+    if (state.storyFocus === "chapter") state.storyFocusId = kids[0].id;
+  } else {
+    state.pageId = null;
+    state.panelId = null;
+  }
+  if (state.view === "story") state.storyFocus = "volume";
+}
+
 function storyNotes() {
   return state.tree && state.tree.notes ? state.tree.notes : [];
 }
@@ -1131,6 +1161,7 @@ function storySide(project, volume, chapter, pageRow, note) {
       </select>
     </label>
     <button type="button" class="ghost" data-act="add-volume">Add volume</button>
+    <button type="button" class="danger quiet" data-act="delete-manga" data-id="${esc(project.id)}">Delete manga</button>
   `;
 }
 
@@ -1158,6 +1189,7 @@ function storyOutline(project, volume, chapter) {
   ` : "";
   const titleOn = state.storyFocus === "title" ? " on" : "";
   return `
+    ${volumeSelect("pick-story-volume", volume ? volume.id : "")}
     <div class="tree-node">
       <label class="field tree-name tree-root${titleOn}">Title
         <input type="text" data-save="project" data-field="title" data-entity="${esc(project.id)}" value="${esc(project.title)}">
@@ -1193,11 +1225,12 @@ function pageOutline(project, vols) {
   const volumeNode = volume ? `
     <div class="tree-node">
       <button type="button" class="page-link on" data-act="nav-volume" data-id="${esc(volume.id)}">${esc(volumeName)}</button>
-      ${chapter ? treePlus("add-page", chapter.id) : ""}
+      ${chapter ? treePlus("add-page", chapter.id) : treePlus("add-chapter", volume.id)}
       <div class="tree-kids">${chapterNode}</div>
     </div>
   ` : "";
   return `
+    ${volumeSelect("pick-nav-volume", volume ? volume.id : "")}
     <div class="tree-node">
       <label class="field tree-name tree-root">Title
         <input type="text" data-save="project" data-field="title" data-entity="${esc(project.id)}" value="${esc(project.title)}">
@@ -1905,6 +1938,21 @@ const actions = {
   "use-illust-version"(button) {
     return run("Restoring…", async () => {
       absorb(await rpc("illust.use_version", { id: state.illustId, versionId: button.dataset.id }));
+    });
+  },
+  "delete-manga"(button) {
+    const id = (button && button.dataset.id) || (state.tree && state.tree.project && state.tree.project.id);
+    if (!id || !confirm("Delete this manga and its pages?")) return;
+    return run("Deleting…", async () => {
+      absorb(await rpc("project.delete", { id }));
+      if (state.tree && state.tree.project && state.tree.project.id === id) {
+        state.tree = null;
+        state.pageId = null;
+        state.panelId = null;
+      }
+      if (state.mangaId === id) state.mangaId = null;
+      state.view = "home";
+      state.menuOpen = false;
     });
   },
   "delete-illust"(button) {
@@ -3104,6 +3152,11 @@ document.addEventListener("change", (event) => {
     state.spreadAt = 0;
     state.sheets = null;
     loadSheets();
+    return;
+  }
+  if (el.dataset && (el.dataset.act === "pick-nav-volume" || el.dataset.act === "pick-story-volume")) {
+    focusVolume(el.value);
+    render();
     return;
   }
   if (!el.dataset || el.tagName !== "SELECT" || !el.dataset.save) return;
