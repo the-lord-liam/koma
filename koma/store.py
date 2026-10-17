@@ -245,6 +245,7 @@ class Store:
         self._add_column("panels", "prompt", "TEXT NOT NULL DEFAULT ''")
         self._add_column("panels", "objects", "TEXT NOT NULL DEFAULT '[]'")
         self._add_column("panels", "vibe", "TEXT NOT NULL DEFAULT ''")
+        self._add_column("meshes", "thumb_path", "TEXT NOT NULL DEFAULT ''")
         self._backfill_volumes()
 
     def _backfill_volumes(self) -> None:
@@ -478,8 +479,11 @@ class Store:
             UNION
             SELECT glb_path FROM meshes
               WHERE character_id IN (SELECT id FROM characters WHERE project_id = ?)
+            UNION
+            SELECT thumb_path FROM meshes
+              WHERE character_id IN (SELECT id FROM characters WHERE project_id = ?)
             """,
-            (project_id, project_id, project_id, project_id, project_id, project_id, project_id),
+            (project_id, project_id, project_id, project_id, project_id, project_id, project_id, project_id),
         )
         return [row["p"] for row in rows if row["p"]]
 
@@ -513,7 +517,10 @@ class Store:
     def delete_character(self, character_id: str) -> None:
         row = self.get_character(character_id)
         paths = [ref["image_path"] for ref in self.list_refs("character", character_id)]
-        paths.extend(mesh["glb_path"] for mesh in self.list_meshes(character_id))
+        for mesh in self.list_meshes(character_id):
+            paths.append(mesh["glb_path"])
+            if mesh.get("thumb_path"):
+                paths.append(mesh["thumb_path"])
         self._write("DELETE FROM refs WHERE owner_kind = 'character' AND owner_id = ?", (character_id,))
         self._write("DELETE FROM meshes WHERE character_id = ?", (character_id,))
         self._write("DELETE FROM characters WHERE id = ?", (character_id,))
@@ -546,7 +553,15 @@ class Store:
         row = self.get_mesh(mesh_id)
         self._write("DELETE FROM meshes WHERE id = ?", (mesh_id,))
         self._drop(row["glb_path"])
+        self._drop(row.get("thumb_path"))
         return row
+
+    def set_mesh_thumb(self, mesh_id: str, thumb_path: str) -> None:
+        row = self.get_mesh(mesh_id)
+        self._write("UPDATE meshes SET thumb_path = ? WHERE id = ?", (thumb_path, mesh_id))
+        previous = row.get("thumb_path") or ""
+        if previous and previous != thumb_path:
+            self._drop(previous)
 
     def create_location(self, project_id: str, name: str) -> dict:
         location_id = new_id()
