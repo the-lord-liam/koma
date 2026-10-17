@@ -224,6 +224,7 @@ class Studio:
                     "provider": mesh["provider"],
                     "source": mesh["source"],
                     "url": f"koma:///mesh/{name}",
+                    "thumb": media_url(mesh.get("thumb_path")) if mesh.get("thumb_path") else "",
                     "createdAt": mesh["created_at"],
                 }
             )
@@ -1753,6 +1754,54 @@ class Studio:
         piece = data[offset : offset + 1_500_000]
         return {"glb": base64.b64encode(piece).decode("ascii"), "offset": offset, "total": total}
 
+    def character_mesh_thumb(self, params: dict) -> dict:
+        mesh = self.store.get_mesh(params["id"])
+        character = self.store.get_character(mesh["character_id"])
+        self._store_mesh_thumb(mesh, _png_bytes(params.get("png")))
+        self.store.touch(character["project_id"])
+        return self._pack(character["project_id"])
+
+    def character_mesh_shot(self, params: dict) -> dict:
+        """Save the current 3D view as a pose reference, and on a panel when one is open."""
+        mesh = self.store.get_mesh(params["id"])
+        character = self.store.get_character(mesh["character_id"])
+        panel_id = str(params.get("panelId") or "").strip()
+        panel = None
+        if panel_id:
+            try:
+                panel = self.store.get_panel(panel_id)
+            except KeyError:
+                raise ValueError("Open a panel, then save this angle onto it.") from None
+            page = self.store.get_page(panel["page_id"])
+            chapter = self.store.get_chapter(page["chapter_id"])
+            if chapter["project_id"] != character["project_id"]:
+                raise ValueError("That panel is in another book.")
+        data = _png_bytes(params.get("png"))
+        image_path = str(save_image(data))
+        self.store.create_ref(
+            "character",
+            character["id"],
+            "poses",
+            "3D angle",
+            image_path,
+            "Saved from the 3D view.",
+        )
+        self._store_mesh_thumb(mesh, data)
+        if panel is not None:
+            self.store.create_ref(
+                "panel",
+                panel["id"],
+                "reference",
+                "3D angle",
+                str(save_image(data)),
+                "Saved from the 3D view.",
+            )
+        self.store.touch(character["project_id"])
+        return self._pack(character["project_id"])
+
+    def _store_mesh_thumb(self, mesh: dict, data: bytes) -> None:
+        self.store.set_mesh_thumb(mesh["id"], str(save_image(_thumb_png(data))))
+
     def _mesh_prompt(self, character: dict, typed: str) -> str:
         typed = typed.strip()
         if typed:
@@ -2784,6 +2833,37 @@ def _json_object(text: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _png_bytes(raw: object) -> bytes:
+    text = str(raw or "").strip()
+    if "," in text and text.startswith("data:"):
+        text = text.split(",", 1)[1]
+    try:
+        data = base64.b64decode(text, validate=False)
+    except Exception:
+        raise ValueError("That picture could not be read.") from None
+    if not data or len(data) > 8_000_000:
+        raise ValueError("That picture is too large.")
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            image.load()
+            if image.format != "PNG":
+                raise ValueError("That picture needs to be a PNG.")
+    except ValueError:
+        raise
+    except Exception:
+        raise ValueError("That picture could not be read.") from None
+    return data
+
+
+def _thumb_png(data: bytes) -> bytes:
+    with Image.open(io.BytesIO(data)) as image:
+        image = image.convert("RGBA")
+        image.thumbnail((96, 96), Image.Resampling.LANCZOS)
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
 def _direction(value) -> int:
     try:
         number = int(value)
@@ -2872,6 +2952,8 @@ ROUTES = {
     "character.mesh_delete": Studio.character_mesh_delete,
     "character.mesh_export": Studio.character_mesh_export,
     "character.mesh_bytes": Studio.character_mesh_bytes,
+    "character.mesh_thumb": Studio.character_mesh_thumb,
+    "character.mesh_shot": Studio.character_mesh_shot,
     "location.create": Studio.location_create,
     "location.update": Studio.location_update,
     "location.delete": Studio.location_delete,
