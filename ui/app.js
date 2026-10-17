@@ -2827,16 +2827,23 @@ const actions = {
     }
     const canvas = document.querySelector("canvas[data-mesh-id]");
     if (canvas && canvas._geom && window.applyClipFrame) applyClipFrame(canvas._geom);
-    render();
+    const play = document.querySelector("[data-act='mesh-play']");
+    if (play) {
+      play.textContent = meshCamera.playing ? "Pause" : "Play";
+      play.classList.toggle("on", Boolean(meshCamera.playing));
+    }
   },
   "mesh-loop"() {
     meshCamera.loop = meshCamera.loop === false;
-    render();
+    const button = document.querySelector("[data-act='mesh-loop']");
+    if (button) button.classList.toggle("on", meshCamera.loop !== false);
   },
   "mesh-speed"(button) {
     const speed = Number(button.dataset.value);
     meshCamera.speed = speed > 0 ? speed : 1;
-    render();
+    document.querySelectorAll("[data-act='mesh-speed']").forEach((chip) => {
+      chip.classList.toggle("on", Number(chip.dataset.value) === meshCamera.speed);
+    });
   },
   "mesh-anim-import"(button) {
     return (async () => {
@@ -3938,8 +3945,10 @@ document.addEventListener("input", (event) => {
     return;
   }
   if (el && el.dataset && el.dataset.animTime != null && window.meshCamera) {
+    const next = Number(el.value) || 0;
+    if (Math.abs(next - (Number(meshCamera.time) || 0)) < 0.0001) return;
     meshCamera.playing = false;
-    meshCamera.time = Number(el.value) || 0;
+    meshCamera.time = next;
     const canvas = document.querySelector("canvas[data-mesh-id]");
     if (canvas && canvas._geom && window.applyClipFrame) {
       applyClipFrame(canvas._geom);
