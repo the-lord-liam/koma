@@ -235,6 +235,13 @@ class Store:
               glb_path TEXT NOT NULL,
               created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS poses (
+              id TEXT PRIMARY KEY,
+              character_id TEXT NOT NULL,
+              name TEXT NOT NULL,
+              bones_json TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
             """
         )
         self._add_column("chapters", "volume_id", "TEXT NOT NULL DEFAULT ''")
@@ -420,6 +427,10 @@ class Store:
                 "DELETE FROM meshes WHERE character_id IN (SELECT id FROM characters WHERE project_id = ?)",
                 (project_id,),
             )
+            self._write(
+                "DELETE FROM poses WHERE character_id IN (SELECT id FROM characters WHERE project_id = ?)",
+                (project_id,),
+            )
             self._write("DELETE FROM volumes WHERE project_id = ?", (project_id,))
             self._write(
                 """
@@ -523,6 +534,7 @@ class Store:
                 paths.append(mesh["thumb_path"])
         self._write("DELETE FROM refs WHERE owner_kind = 'character' AND owner_id = ?", (character_id,))
         self._write("DELETE FROM meshes WHERE character_id = ?", (character_id,))
+        self._write("DELETE FROM poses WHERE character_id = ?", (character_id,))
         self._write("DELETE FROM characters WHERE id = ?", (character_id,))
         self.touch(row["project_id"])
         for path in paths:
@@ -555,6 +567,41 @@ class Store:
         self._drop(row["glb_path"])
         self._drop(row.get("thumb_path"))
         return row
+
+    def save_pose(self, character_id: str, name: str, bones_json: str) -> dict:
+        existing = self._one(
+            "SELECT * FROM poses WHERE character_id = ? AND name = ?",
+            (character_id, name),
+        )
+        if existing:
+            self._write(
+                "UPDATE poses SET bones_json = ?, created_at = ? WHERE id = ?",
+                (bones_json, now(), existing["id"]),
+            )
+            return self.get_pose(existing["id"])
+        pose_id = new_id()
+        self._write(
+            """INSERT INTO poses (id, character_id, name, bones_json, created_at)
+               VALUES (?, ?, ?, ?, ?)""",
+            (pose_id, character_id, name, bones_json, now()),
+        )
+        return self.get_pose(pose_id)
+
+    def list_poses(self, character_id: str) -> list[dict]:
+        return self._all(
+            "SELECT * FROM poses WHERE character_id = ? ORDER BY created_at, rowid",
+            (character_id,),
+        )
+
+    def get_pose(self, pose_id: str) -> dict:
+        row = self._one("SELECT * FROM poses WHERE id = ?", (pose_id,))
+        if row is None:
+            raise KeyError("Pose not found")
+        return row
+
+    def delete_pose(self, pose_id: str) -> None:
+        self.get_pose(pose_id)
+        self._write("DELETE FROM poses WHERE id = ?", (pose_id,))
 
     def set_mesh_thumb(self, mesh_id: str, thumb_path: str) -> None:
         row = self.get_mesh(mesh_id)

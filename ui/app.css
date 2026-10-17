@@ -1055,6 +1055,19 @@ body[data-studio="1"] .settings { background: #1c1c1e; }
 .mesh-view.empty .mesh-empty { color: #8e8e93; }
 .mesh-note:empty { display: none; }
 .mesh-tools, .mesh-shapes { flex-wrap: wrap; }
+.mesh-bones {
+  max-height: 168px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.mesh-bone-group { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.mesh-hands { color: #c7c7cc; font-size: 13px; }
+.mesh-hands summary { cursor: pointer; }
+.mesh-sliders { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; color: #c7c7cc; font-size: 12px; }
+.mesh-sliders input[type="range"] { width: 112px; vertical-align: middle; }
+.pose-name { width: 148px; }
 .mesh-panel.large {
   position: fixed;
   inset: 0;

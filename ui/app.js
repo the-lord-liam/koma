@@ -61,6 +61,7 @@ const state = {
   helpOpen: false,
   meshSource: "prompt",
   meshPrompt: "",
+  poseName: "",
   meshId: null,
 };
 
@@ -274,7 +275,7 @@ function paintHelp() {
         <li><kbd>[</kbd> <kbd>]</kbd> Move the selected panel earlier or later</li>
         <li><kbd>Delete</kbd> Delete the selected panel</li>
         <li><kbd>←</kbd> <kbd>→</kbd> Turn the page in Read</li>
-        <li>3D model: drag orbits, Shift-drag pans, Alt-drag rolls, scroll zooms. Grid, background, and Save this angle sit under the model</li>
+        <li>3D model: drag orbits, Shift-drag pans, Alt-drag rolls, scroll zooms. Pose rotates a rigged model. Grid, background, and Save this angle sit under the model</li>
       </ul>
       <p class="meta">Drag a page in the list, or a panel on the sheet, to reorder it. The Earlier and Later buttons do the same. The last 20 edits on a page stay on disk.</p>
       <button type="button" class="ghost" data-act="close-help">Close</button>
@@ -1093,7 +1094,8 @@ function characterMesh(person) {
       </div>
       ${current ? `<p class="meta">Drag to orbit any way. Shift-drag pans. Alt-drag rolls. Scroll zooms.</p>
         ${shapeRow}
-        ${shapes.length ? `<p class="meta">Expressions move morph targets. The skeleton stays in the bind pose. Front, side, and three-quarter turn the camera.</p>` : ""}
+        ${poseControls(person, current)}
+        ${shapes.length ? `<p class="meta">Expressions move morph targets and stay on while a pose is set. Front, side, and three-quarter turn the camera.</p>` : ""}
         <div class="row mesh-tools">
           <button type="button" class="chip ${flags.angle === "front" ? "on" : ""}" data-act="mesh-angle" data-value="front">Front</button>
           <button type="button" class="chip ${flags.angle === "side" ? "on" : ""}" data-act="mesh-angle" data-value="side">Side</button>
@@ -1115,6 +1117,77 @@ function characterMesh(person) {
         </div>
         ${older ? `<div class="row">${older}</div>` : ""}` : ""}
     </section>
+  `;
+}
+
+function poseControls(person, current) {
+  const bones = (window.meshCamera && meshCamera.bones) || [];
+  if (!current || !bones.length) return "";
+  const flags = window.meshFlags ? meshFlags() : { poseMode: false, selected: "" };
+  const presets = [
+    ["bind", "T / A pose"],
+    ["relaxed", "Standing"],
+    ["walk", "Walking"],
+    ["run", "Running"],
+    ["sit", "Sitting"],
+    ["point", "Pointing"],
+    ["cross", "Arms crossed"],
+    ["fight", "Fighting"],
+  ];
+  if (!flags.poseMode) {
+    return `
+      <div class="row mesh-tools">
+        <button type="button" class="chip" data-act="mesh-pose">Pose</button>
+      </div>
+      <p class="meta">Pose rotates this rig. A VRM uses its humanoid bones. Other models match bones by name.</p>`;
+  }
+  const groups = [];
+  for (const bone of bones) {
+    let group = groups.find((item) => item.name === bone.group);
+    if (!group) {
+      group = { name: bone.group, bones: [] };
+      groups.push(group);
+    }
+    group.bones.push(bone);
+  }
+  const canvas = document.querySelector("canvas[data-mesh-id]");
+  const geom = canvas && canvas._geom;
+  const euler = window.boneEuler && flags.selected ? boneEuler(geom, flags.selected) : { x: 0, y: 0, z: 0 };
+  const body = groups.filter((group) => group.name !== "Hands").map((group) => `
+    <div class="mesh-bone-group">
+      <span class="meta">${esc(group.name)}</span>
+      ${group.bones.map((bone) => `<button type="button" class="chip ${flags.selected === bone.name ? "on" : ""}" data-act="mesh-bone" data-bone="${esc(bone.name)}">${esc(bone.label)}</button>`).join("")}
+    </div>`).join("");
+  const hands = groups.find((group) => group.name === "Hands");
+  const handRow = hands ? `
+    <details class="mesh-hands">
+      <summary>Hands</summary>
+      <div class="mesh-bone-group">
+        ${hands.bones.map((bone) => `<button type="button" class="chip ${flags.selected === bone.name ? "on" : ""}" data-act="mesh-bone" data-bone="${esc(bone.name)}">${esc(bone.label)}</button>`).join("")}
+      </div>
+    </details>` : "";
+  const saved = (person.poses || []).map((pose) => `
+    <button type="button" class="chip" data-act="pose-load" data-id="${esc(pose.id)}" data-char="${esc(person.id)}">${esc(pose.name)}</button>
+    <button type="button" class="quiet" data-act="pose-delete" data-id="${esc(pose.id)}">Delete</button>
+  `).join("");
+  return `
+    <div class="row mesh-tools">
+      <button type="button" class="chip on" data-act="mesh-pose">Pose</button>
+      ${presets.map(([value, label]) => `<button type="button" class="chip" data-act="mesh-preset" data-value="${value}">${label}</button>`).join("")}
+    </div>
+    <div class="mesh-bones" data-scroll="pose-bones">
+      ${body}
+      ${handRow}
+    </div>
+    <div class="mesh-sliders">
+      ${["x", "y", "z"].map((axis) => `<label>${axis.toUpperCase()} <input type="range" min="-180" max="180" step="1" data-pose-axis="${axis}" value="${euler[axis]}" aria-label="${axis.toUpperCase()} rotation"></label>`).join("")}
+    </div>
+    <p class="meta">Click a bone here or on the model. Drag a handle, or use the sliders. T / A pose restores the file's bind pose.</p>
+    <div class="row mesh-tools">
+      <input id="pose-name" class="pose-name" type="text" data-save="local" data-field="poseName" data-entity="" value="${esc(state.poseName || "")}" placeholder="Name this pose" maxlength="40">
+      <button type="button" class="ghost" data-act="pose-save" data-id="${esc(person.id)}" ${state.busy ? "disabled" : ""}>Save pose</button>
+    </div>
+    ${saved ? `<div class="row mesh-tools">${saved}</div>` : ""}
   `;
 }
 
@@ -2679,6 +2752,45 @@ const actions = {
     meshCamera.shape = button.dataset.value || "";
     render();
   },
+  "mesh-pose"() {
+    meshCamera.poseMode = !meshCamera.poseMode;
+    render();
+  },
+  "mesh-bone"(button) {
+    meshCamera.selected = button.dataset.bone || "";
+    meshCamera.poseMode = true;
+    render();
+  },
+  "mesh-preset"(button) {
+    if (window.applyPosePreset) applyPosePreset(button.dataset.value || "bind");
+    render();
+  },
+  "pose-save"(button) {
+    const field = document.getElementById("pose-name");
+    const name = (field && field.value) || state.poseName || "";
+    state.poseName = name;
+    const rotations = (window.meshCamera && meshCamera.pose) || {};
+    const shape = (window.meshCamera && meshCamera.shape) || "";
+    return run("Saving pose…", async () => {
+      absorb(await rpc("character.pose_save", { id: button.dataset.id, name, rotations, shape }));
+    });
+  },
+  "pose-load"(button) {
+    const person = (state.tree.characters || []).find((item) => item.id === button.dataset.char);
+    const pose = person && (person.poses || []).find((item) => item.id === button.dataset.id);
+    if (!pose || !window.meshCamera) return;
+    meshCamera.pose = pose.rotations || {};
+    if (pose.shape) meshCamera.shape = pose.shape;
+    meshCamera.poseMode = true;
+    if (window.refreshMeshPose) refreshMeshPose();
+    render();
+  },
+  "pose-delete"(button) {
+    if (!confirm("Delete this pose?")) return;
+    return run("Deleting pose…", async () => {
+      absorb(await rpc("character.pose_delete", { id: button.dataset.id }));
+    });
+  },
   "mesh-angle"(button) {
     const angle = button.dataset.value || "";
     meshCamera.angle = angle;
@@ -3719,9 +3831,17 @@ document.addEventListener("focusout", (event) => {
 document.addEventListener("input", (event) => {
   const el = event.target;
   if (el && el.id === "bot-draft") state.botDraft = el.value;
+  if (el && el.dataset && el.dataset.poseAxis && window.setPoseAxis) {
+    setPoseAxis(el.dataset.poseAxis, el.value);
+    return;
+  }
   if (!el.dataset || el.dataset.save !== "local") return;
   if (el.dataset.field === "meshPrompt") {
     state.meshPrompt = el.value;
+    return;
+  }
+  if (el.dataset.field === "poseName") {
+    state.poseName = el.value;
     return;
   }
   if (!String(el.dataset.field || "").startsWith("setup")) return;
