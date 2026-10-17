@@ -986,7 +986,7 @@ function drawGridGl(gl, geom) {
     verts[at + 5] = segment[1][2];
   });
   if (!geom._gridBuf || geom._gridGl !== gl) {
-    if (geom._gridBuf) gl.deleteBuffer(geom._gridBuf);
+    if (geom._gridBuf && geom._gridGl === gl && gl.isBuffer(geom._gridBuf)) gl.deleteBuffer(geom._gridBuf);
     geom._gridBuf = gl.createBuffer();
     geom._gridGl = gl;
   }
@@ -1256,9 +1256,12 @@ function textureFor(gl, mat) {
 
 function ensureGlBuffers(gl, geom) {
   if (geom._glBuilt === gl) return;
+  const same = geom._glBuilt == null;
   for (const range of geom.ranges) {
-    if (range.buffer) gl.deleteBuffer(range.buffer);
-    if (range.lines) gl.deleteBuffer(range.lines);
+    if (same && range.buffer && gl.isBuffer(range.buffer)) gl.deleteBuffer(range.buffer);
+    if (same && range.lines && gl.isBuffer(range.lines)) gl.deleteBuffer(range.lines);
+    range.buffer = null;
+    range.lines = null;
     const count = range.count;
     const interleaved = new Float32Array(count * 8);
     const step = Math.max(1, Math.floor(count / 3 / 4000));
