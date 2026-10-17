@@ -1635,6 +1635,218 @@ class CoreTests(unittest.TestCase):
         self.studio.character_delete({"id": character_id})
         self.assertEqual(self.store.list_poses(character_id), [])
 
+    def test_animation_retarget_and_posed_export(self):
+        import math
+        import struct
+        import subprocess
+
+        from koma.mesh import (
+            _assemble,
+            _chunks,
+            MeshError,
+            animation_clips,
+            bake_posed_glb,
+            cube_glb,
+            retarget_clips,
+            sample_channel,
+            sample_clip,
+        )
+
+        half = math.sin(math.pi / 4)
+        turned = [0.0, 0.0, half, half]
+        document, blob = _chunks(cube_glb())
+        times = struct.pack("<2f", 0.0, 1.0)
+        rotations = struct.pack("<8f", 0.0, 0.0, 0.0, 1.0, *turned)
+        extra = times + rotations
+        document["nodes"] = [
+            {"name": "Hips", "translation": [0.0, 1.0, 0.0], "children": [1]},
+            {"name": "LeftArm", "rotation": [0.0, 0.0, 0.0, 1.0], "children": [2]},
+            {"name": "Body", "mesh": 0, "skin": 0},
+        ]
+        document["skins"] = [{"joints": [0, 1]}]
+        document["scenes"] = [{"nodes": [0]}]
+        base = len(blob)
+        document["buffers"] = [{"byteLength": base + len(extra)}]
+        document["bufferViews"] = list(document["bufferViews"]) + [
+            {"buffer": 0, "byteOffset": base, "byteLength": 8},
+            {"buffer": 0, "byteOffset": base + 8, "byteLength": 32},
+        ]
+        document["accessors"] = list(document["accessors"]) + [
+            {"bufferView": 2, "componentType": 5126, "count": 2, "type": "SCALAR", "min": [0.0], "max": [1.0]},
+            {"bufferView": 3, "componentType": 5126, "count": 2, "type": "VEC4"},
+        ]
+        document["animations"] = [
+            {
+                "channels": [{"sampler": 0, "target": {"node": 1, "path": "rotation"}}],
+                "samplers": [{"input": 2, "output": 3, "interpolation": "LINEAR"}],
+            }
+        ]
+        animated = _assemble(document, blob + extra)
+        clips = animation_clips(animated)
+        self.assertEqual(clips[0]["name"], "Clip 1")
+        self.assertEqual(clips[0]["duration"], 1.0)
+        start = sample_clip(clips[0], 0.0)[1]["rotation"]
+        mid = sample_clip(clips[0], 0.5)[1]["rotation"]
+        end = sample_clip(clips[0], 1.0)[1]["rotation"]
+        self.assertAlmostEqual(start[3], 1.0, places=5)
+        self.assertAlmostEqual(mid[2], math.sin(math.pi / 8), places=5)
+        self.assertAlmostEqual(mid[3], math.cos(math.pi / 8), places=5)
+        self.assertAlmostEqual(end[2], half, places=5)
+        self.assertAlmostEqual(sample_clip(clips[0], 1.5, loop=True)[1]["rotation"][2], mid[2], places=4)
+        self.assertAlmostEqual(sample_clip(clips[0], 1.4, loop=False)[1]["rotation"][2], half, places=5)
+        held = sample_channel([0.0, 1.0], [[0.0, 0.0, 0.0], [3.0, 0.0, 0.0]], 0.75, "STEP")
+        self.assertEqual(held, [0.0, 0.0, 0.0])
+        curved = sample_channel(
+            [0.0, 1.0],
+            [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [2.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            0.5,
+            "CUBICSPLINE",
+        )
+        self.assertAlmostEqual(curved[0], 1.0, places=5)
+
+        other = _chunks(cube_glb())[0]
+        other["nodes"] = [
+            {"name": "Root"},
+            {"name": "Hips", "translation": [0.0, 2.0, 0.0], "children": [2]},
+            {"name": "LeftArm", "rotation": [0.0, 0.0, 0.0, 1.0]},
+        ]
+        other["scenes"] = [{"nodes": [1]}]
+        other_bytes = _assemble(other, _chunks(cube_glb())[1])
+        moved = retarget_clips(animated, other_bytes)
+        self.assertEqual(moved[0]["channels"][0]["node"], 2)
+        self.assertAlmostEqual(sample_clip(moved[0], 1.0)[2]["rotation"][2], half, places=5)
+
+        human_source = _chunks(cube_glb())[0]
+        human_source["nodes"] = [
+            {"name": "hips", "translation": [0.0, 1.0, 0.0], "children": [1, 2]},
+            {"name": "spine", "children": [3]},
+            {"name": "leftUpperLeg"},
+            {"name": "chest", "children": [4, 5, 6]},
+            {"name": "neck", "children": [7]},
+            {"name": "leftUpperArm", "rotation": [0.0, 0.0, 0.0, 1.0]},
+            {"name": "rightUpperArm"},
+            {"name": "head", "translation": [0.0, 1.7, 0.0]},
+        ]
+        human_source["scenes"] = [{"nodes": [0]}]
+        human_source["buffers"] = [{"byteLength": len(extra) + len(blob)}]
+        human_source["bufferViews"] = [
+            {"buffer": 0, "byteOffset": len(blob), "byteLength": 8},
+            {"buffer": 0, "byteOffset": len(blob) + 8, "byteLength": 32},
+        ]
+        human_source["accessors"] = [
+            {"bufferView": 0, "componentType": 5126, "count": 2, "type": "SCALAR"},
+            {"bufferView": 1, "componentType": 5126, "count": 2, "type": "VEC4"},
+        ]
+        human_source["animations"] = [
+            {
+                "name": "Wave",
+                "channels": [{"sampler": 0, "target": {"node": 5, "path": "rotation"}}],
+                "samplers": [{"input": 0, "output": 1, "interpolation": "LINEAR"}],
+            }
+        ]
+        human_target = _chunks(cube_glb())[0]
+        human_target["nodes"] = [
+            {"name": "mixamorig:Hips", "translation": [0.0, 1.0, 0.0], "children": [1, 2]},
+            {"name": "mixamorig:Spine", "children": [3]},
+            {"name": "mixamorig:LeftUpLeg"},
+            {"name": "mixamorig:Spine1", "children": [4, 5, 6]},
+            {"name": "mixamorig:Neck", "children": [7]},
+            {"name": "mixamorig:LeftArm", "rotation": [0.0, 0.0, half, half]},
+            {"name": "mixamorig:RightArm"},
+            {"name": "mixamorig:Head", "translation": [0.0, 1.7, 0.0]},
+        ]
+        human_target["scenes"] = [{"nodes": [0]}]
+        retargeted = retarget_clips(
+            _assemble(human_source, blob + extra),
+            _assemble(human_target, blob),
+        )
+        self.assertEqual(retargeted[0]["name"], "Wave")
+        self.assertEqual(retargeted[0]["channels"][0]["node"], 5)
+        posed = sample_clip(retargeted[0], 0.0)[5]["rotation"]
+        self.assertAlmostEqual(posed[2], half, places=4)
+        self.assertAlmostEqual(posed[3], half, places=4)
+
+        with self.assertRaises(MeshError):
+            retarget_clips(cube_glb(), other_bytes)
+        lonely = _chunks(cube_glb())[0]
+        lonely["nodes"] = [{"name": "Tail"}, {"name": "Tip"}]
+        lonely["scenes"] = [{"nodes": [0]}]
+        with self.assertRaises(MeshError):
+            retarget_clips(animated, _assemble(lonely, blob))
+
+        baked = bake_posed_glb(
+            [(0.0, 0.0, 0.0), (1.0, 0.0, 0.0), (0.0, 2.0, 0.0)],
+            [0, 1, 2],
+            [(0.0, 0.0), (1.0, 0.0), (0.0, 1.0)],
+        )
+        positions = parse_positions(baked)
+        self.assertEqual(len(positions), 3)
+        self.assertAlmostEqual(positions[2][1], 2.0, places=5)
+        baked_doc, _baked_blob = _chunks(baked)
+        self.assertEqual(baked_doc["nodes"][0]["name"], "Posed")
+        self.assertIn("NORMAL", baked_doc["meshes"][0]["primitives"][0]["attributes"])
+
+        created = self.studio.project_create({"title": "Clips", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        made = self.studio.character_create({"projectId": project_id, "name": "Nia"})
+        character_id = made["tree"]["characters"][-1]["id"]
+        folder = Path(self.tmp.name) / "clips"
+        folder.mkdir()
+        target_path = folder / "hero.glb"
+        target_path.write_bytes(other_bytes)
+        clip_path = folder / "wave.glb"
+        clip_path.write_bytes(animated)
+        imported = self.studio.character_mesh_import({"id": character_id, "path": str(target_path)})
+        mesh_id = imported["tree"]["characters"][-1]["meshes"][0]["id"]
+        loaded = self.studio.character_mesh_anim({"id": mesh_id, "path": str(clip_path)})
+        self.assertEqual(loaded["clips"][0]["channels"][0]["node"], 2)
+        with self.assertRaises(ValueError):
+            self.studio.character_mesh_anim({"id": mesh_id, "path": str(folder / "missing.glb")})
+        outside = Path("/etc/passwd")
+        if outside.is_file():
+            with self.assertRaises(ValueError):
+                self.studio.character_mesh_anim({"id": mesh_id, "path": str(outside)})
+        original = self.studio.character_mesh_export({"id": mesh_id, "format": "glb"})
+        posed_export = self.studio.character_mesh_export_posed(
+            {
+                "id": mesh_id,
+                "positions": [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 3.0, 0.0],
+                "indices": [0, 1, 2],
+                "uvs": [0.0, 0.0, 1.0, 0.0, 0.0, 1.0],
+                "ranges": [{"start": 0, "count": 3, "color": [0.2, 0.4, 0.8], "image": -1}],
+            }
+        )
+        self.assertTrue(posed_export["path"].endswith("-posed.glb"))
+        self.assertNotEqual(Path(original["path"]).read_bytes(), Path(posed_export["path"]).read_bytes())
+        self.assertAlmostEqual(parse_positions(Path(posed_export["path"]).read_bytes())[2][1], 3.0, places=5)
+        stored = Path(self.studio.store.get_mesh(mesh_id)["glb_path"]).read_bytes()
+        self.assertEqual(Path(original["path"]).read_bytes(), stored)
+
+        script = r"""
+const fs = require("fs");
+const vm = require("vm");
+global.window = global;
+global.document = {
+  querySelector() { return null; },
+  querySelectorAll() { return []; },
+  addEventListener() {},
+  createElement() { return { getContext() { return null; } }; },
+};
+global.performance = { now: () => 0 };
+global.requestAnimationFrame = () => 1;
+vm.runInThisContext(fs.readFileSync("ui/view3d.js", "utf8"));
+const mid = sampleChannel([0, 1], [[0, 0, 0, 1], [0, 0, 0.70710678118, 0.70710678118]], 0.5, "LINEAR");
+const held = sampleChannel([0, 1], [[0, 0, 0], [3, 0, 0]], 0.75, "STEP");
+const curved = sampleChannel([0, 1], [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [2, 0, 0], [0, 0, 0]], 0.5, "CUBICSPLINE");
+process.stdout.write(JSON.stringify({ mid, held, curved }));
+"""
+        completed = subprocess.run(["node", "-e", script], cwd="/workspace", capture_output=True, text=True, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        got = json.loads(completed.stdout)
+        self.assertAlmostEqual(got["mid"][2], math.sin(math.pi / 8), places=5)
+        self.assertEqual(got["held"], [0.0, 0.0, 0.0])
+        self.assertAlmostEqual(got["curved"][0], 1.0, places=5)
+
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
 
