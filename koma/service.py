@@ -23,7 +23,17 @@ from koma.config import load_config, public_settings, save_config
 from koma.formats import FormatError, catalog as format_catalog, project_pixels, resolve_format
 from koma.layouts import LAYOUTS, LayoutError, assist_divide, place, reflow_after_delete, to_stored_line
 from koma.media import media_url, save_image, unlink
-from koma.mesh import NOT_INSTALLED, MeshError, command_available, generate_mesh, load_model_file, obj_from_glb, parse_glb
+from koma.mesh import (
+    NOT_INSTALLED,
+    MeshError,
+    bake_posed_glb,
+    command_available,
+    generate_mesh,
+    load_model_file,
+    obj_from_glb,
+    parse_glb,
+    retarget_clips,
+)
 from koma.paths import data_dir, export_root, exports_dir, meshes_dir, previews_dir, safe_slug
 from koma.prompts import (
     ANCHORS,
@@ -1759,6 +1769,48 @@ class Studio:
             dest.write_bytes(obj_from_glb(data))
         return {"path": str(dest)}
 
+    def character_mesh_export_posed(self, params: dict) -> dict:
+        """Write the viewer's current pose and expression. The stored model stays as it was."""
+        mesh = self.store.get_mesh(params["id"])
+        character = self.store.get_character(mesh["character_id"])
+        project = self.store.get_project(character["project_id"])
+        positions = _flat_vectors(params.get("positions"), 3, 3, 120_000, "That posed model has no faces.")
+        indices = _triangle_indices(params.get("indices"), len(positions))
+        uvs = _optional_uvs(params.get("uvs"), len(positions))
+        ranges, images = _posed_parts(params.get("ranges"), params.get("images"), len(indices))
+        try:
+            data = bake_posed_glb(positions, indices, uvs, ranges, images)
+        except MeshError as error:
+            raise ValueError(str(error)) from None
+        dest = exports_dir(project["title"]) / f"{safe_slug(character['name'])}-posed.glb"
+        dest.write_bytes(data)
+        return {"path": str(dest)}
+
+    def character_mesh_anim(self, params: dict) -> dict:
+        """Read a GLB or VRM from disk and retarget its clips onto this character."""
+        mesh = self.store.get_mesh(params["id"])
+        source = _local_model_path(params.get("path"))
+        if source.suffix.lower() not in {".glb", ".vrm"}:
+            raise ValueError("Choose a GLB or VRM animation.")
+        if source.stat().st_size > 40_000_000:
+            raise ValueError("That animation is larger than 40 MB.")
+        if source.stat().st_size == 0:
+            raise ValueError("That animation file is empty.")
+        data = source.read_bytes()
+        if not data.startswith(b"glTF"):
+            raise ValueError("That file is not a GLB Koma can read.")
+        target_path = Path(mesh["glb_path"])
+        if not target_path.is_file():
+            raise ValueError("That model file is missing. Generate it again.")
+        try:
+            clips = retarget_clips(data, target_path.read_bytes())
+        except MeshError as error:
+            raise ValueError(str(error)) from None
+        packed = json.dumps(clips)
+        if len(packed) > 8_000_000:
+            raise ValueError("That animation is too large to import.")
+        return {"clips": clips}
+
     def character_mesh_bytes(self, params: dict) -> dict:
         mesh = self.store.get_mesh(params["id"])
         path = Path(mesh["glb_path"])
@@ -2895,6 +2947,126 @@ def _json_object(text: str) -> dict | None:
     return value if isinstance(value, dict) else None
 
 
+def _local_model_path(raw: object) -> Path:
+    source = Path(str(raw or "")).expanduser()
+    if not source.is_file():
+        raise ValueError("Choose a GLB or VRM file.")
+    resolved = source.resolve()
+    roots = [Path.home().resolve(), Path(tempfile.gettempdir()).resolve(), data_dir().resolve()]
+    if not any(resolved == root or root in resolved.parents for root in roots):
+        raise ValueError("Choose a model inside your home folder.")
+    return resolved
+
+
+def _flat_vectors(raw: object, width: int, minimum: int, limit: int, empty: str) -> list[tuple[float, ...]]:
+    if not isinstance(raw, list) or len(raw) % width:
+        raise ValueError(empty)
+    count = len(raw) // width
+    if count < minimum or count > limit:
+        raise ValueError(empty if count < minimum else "That posed model is too large to export.")
+    values = []
+    for index in range(0, len(raw), width):
+        row = []
+        for offset in range(width):
+            try:
+                number = float(raw[index + offset])
+            except (TypeError, ValueError):
+                raise ValueError("That posed model has a point Koma cannot write.") from None
+            if not math.isfinite(number):
+                raise ValueError("That posed model has a point Koma cannot write.")
+            row.append(number)
+        values.append(tuple(row))
+    return values
+
+
+def _triangle_indices(raw: object, vertices: int) -> list[int]:
+    if not isinstance(raw, list) or len(raw) < 3 or len(raw) % 3 or len(raw) > 360_000:
+        raise ValueError("That posed model has no faces.")
+    indices = []
+    for item in raw:
+        if isinstance(item, bool) or not isinstance(item, int):
+            try:
+                if isinstance(item, bool) or isinstance(item, float):
+                    raise ValueError
+                number = int(item)
+            except (TypeError, ValueError):
+                raise ValueError("That posed model has a face Koma cannot write.") from None
+        else:
+            number = item
+        if number < 0 or number >= vertices:
+            raise ValueError("That posed model has a face Koma cannot write.")
+        indices.append(number)
+    return indices
+
+
+def _optional_uvs(raw: object, vertices: int) -> list[tuple[float, float]] | None:
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, list) or len(raw) != vertices * 2:
+        return None
+    try:
+        return _flat_vectors(raw, 2, vertices, vertices, "That posed model has no texture coordinates.")
+    except ValueError:
+        return None
+
+
+def _posed_parts(ranges_raw: object, images_raw: object, index_count: int) -> tuple[list[dict] | None, list[bytes]]:
+    images: list[bytes] = []
+    if isinstance(images_raw, list):
+        total = 0
+        for item in images_raw[:4]:
+            if not isinstance(item, str) or not item.strip():
+                images.append(b"")
+                continue
+            try:
+                data = base64.b64decode(item, validate=False)
+            except Exception:
+                images.append(b"")
+                continue
+            if not data or len(data) > 2_000_000 or total + len(data) > 6_000_000:
+                images.append(b"")
+                continue
+            total += len(data)
+            images.append(data)
+    if not isinstance(ranges_raw, list) or not ranges_raw:
+        return None, [image for image in images if image]
+    ranges = []
+    for item in ranges_raw[:8]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            start = int(item.get("start") or 0)
+            count = int(item.get("count") or 0)
+        except (TypeError, ValueError):
+            continue
+        if count < 3 or start < 0 or start + count > index_count:
+            continue
+        color = item.get("color") or [0.78, 0.78, 0.8]
+        if not isinstance(color, list) or len(color) < 3:
+            color = [0.78, 0.78, 0.8]
+        image_index = item.get("image")
+        if isinstance(image_index, bool) or not isinstance(image_index, int):
+            image_index = None
+        elif image_index < 0 or image_index >= len(images) or not images[image_index]:
+            image_index = None
+        ranges.append({"start": start, "count": count, "color": color[:3], "image": image_index})
+    kept = [image for image in images if image]
+    # Image indexes point at the original list, including skipped blanks. Remap onto kept bytes.
+    if any(row.get("image") is not None for row in ranges):
+        remap = {}
+        packed: list[bytes] = []
+        for index, image in enumerate(images):
+            if not image:
+                continue
+            remap[index] = len(packed)
+            packed.append(image)
+        for row in ranges:
+            if row.get("image") is not None:
+                row["image"] = remap.get(row["image"])
+        return ranges or None, packed
+    return ranges or None, kept
+
+
 def _png_bytes(raw: object) -> bytes:
     text = str(raw or "").strip()
     if "," in text and text.startswith("data:"):
@@ -3013,6 +3185,8 @@ ROUTES = {
     "character.mesh_import": Studio.character_mesh_import,
     "character.mesh_delete": Studio.character_mesh_delete,
     "character.mesh_export": Studio.character_mesh_export,
+    "character.mesh_export_posed": Studio.character_mesh_export_posed,
+    "character.mesh_anim": Studio.character_mesh_anim,
     "character.mesh_bytes": Studio.character_mesh_bytes,
     "character.mesh_thumb": Studio.character_mesh_thumb,
     "character.mesh_shot": Studio.character_mesh_shot,

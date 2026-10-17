@@ -873,7 +873,7 @@ body[data-studio="1"] #status { color: #8e8e93; }
   display: flex;
   flex-direction: column;
   gap: 2px;
-  max-height: 180px;
+  max-height: 320px;
   overflow: auto;
 }
 .rail details { margin: 4px 0; }
@@ -1067,6 +1067,9 @@ body[data-studio="1"] .settings { background: #1c1c1e; }
 .mesh-hands summary { cursor: pointer; }
 .mesh-sliders { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; color: #c7c7cc; font-size: 12px; }
 .mesh-sliders input[type="range"] { width: 112px; vertical-align: middle; }
+.mesh-time { display: flex; gap: 8px; align-items: center; color: #c7c7cc; font-size: 12px; }
+.mesh-time input[type="range"] { flex: 1; min-width: 80px; }
+.mesh-time span { min-width: 92px; }
 .pose-name { width: 148px; }
 .mesh-panel.large {
   position: fixed;
