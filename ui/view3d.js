@@ -214,6 +214,7 @@ function parseGlb(buffer) {
     influences: hasSkin ? influences : null,
     humanoid,
     boneList: boneList(humanoid),
+    clips: hasSkin ? collectClips(document, bin) : [],
   };
 }
 
@@ -544,6 +545,13 @@ const meshCamera = window.meshCamera = {
   bones: [],
   boneKey: "",
   selected: "",
+  clips: [],
+  clipKey: "",
+  clip: -1,
+  time: 0,
+  playing: false,
+  speed: 1,
+  loop: true,
 };
 let meshSpin = 0;
 
@@ -583,9 +591,14 @@ function showMesh(canvas, geom) {
     meshCamera.bones = [];
     meshCamera.boneKey = "";
     meshCamera.selected = "";
+    meshCamera.playing = false;
+    meshCamera.clip = -1;
+    meshCamera.time = 0;
+    meshCamera.clips = [];
+    meshCamera.clipKey = "";
   }
   if (geom.rig) {
-    applyPose(geom);
+    applyClipFrame(geom);
   } else if (!geom.centered) {
     centerGeometry(geom);
     geom.centered = true;
@@ -594,7 +607,7 @@ function showMesh(canvas, geom) {
   } else {
     poseGeometry(geom);
   }
-  const span = Math.max(geom.half[0], geom.half[1], 0.05);
+  const span = Math.max(geom.half[0], geom.half[1], geom.half[2] || 0, 0.05);
   const textured = geom.materials.some((mat) => mat.element);
   const triangles = geom.indices.length / 3;
   const gl = !geom.preferCanvas && (textured || triangles > 12000)
@@ -651,11 +664,16 @@ function publishMeshUi(geom) {
   const shapeKey = `${meshCamera.meshId}\n${names.join("\n")}`;
   const bones = geom.boneList || [];
   const boneKey = `${meshCamera.meshId}\n${bones.map((bone) => bone.name).join(",")}`;
-  const changed = meshCamera.shapeKey !== shapeKey || meshCamera.boneKey !== boneKey;
+  const clips = (geom.clips || []).map((clip) => ({ name: clip.name, duration: Number(clip.duration) || 0 }));
+  const clipKey = `${meshCamera.meshId}\n${clips.map((clip) => `${clip.name}@${clip.duration}`).join("|")}`;
+  const changed = meshCamera.shapeKey !== shapeKey || meshCamera.boneKey !== boneKey || meshCamera.clipKey !== clipKey;
   meshCamera.shapeKey = shapeKey;
   meshCamera.shapeNames = names.slice();
   meshCamera.boneKey = boneKey;
   meshCamera.bones = bones;
+  meshCamera.clipKey = clipKey;
+  meshCamera.clips = clips;
+  if (meshCamera.clip >= clips.length) meshCamera.clip = -1;
   if (!meshCamera.selected && bones.length) {
     const upper = bones.find((bone) => bone.name === "leftUpperArm") || bones[0];
     meshCamera.selected = upper.name;
@@ -782,17 +800,54 @@ function bindOrbit(canvas) {
   }, { passive: false });
 }
 
+let meshClock = 0;
+
 function ensureSpin() {
   if (meshSpin) return;
-  const tick = () => {
+  meshClock = performance.now();
+  const tick = (now) => {
     meshSpin = requestAnimationFrame(tick);
-    if (!meshCamera.auto) return;
     const canvas = document.querySelector("canvas[data-mesh-id]");
-    if (!canvas || canvas._drag || !canvas._geom) return;
-    meshCamera.yaw += 0.012;
-    redraw(canvas);
+    const dt = Math.min(0.05, Math.max(0, (now - meshClock) / 1000));
+    meshClock = now;
+    let dirty = false;
+    if (meshCamera.playing && canvas && canvas._geom && !canvas._drag) {
+      const clip = activeClip(canvas._geom);
+      if (clip) {
+        const duration = Number(clip.duration) || 0;
+        meshCamera.time = (Number(meshCamera.time) || 0) + dt * (Number(meshCamera.speed) || 1);
+        if (duration > 0 && meshCamera.loop === false && meshCamera.time >= duration) {
+          meshCamera.time = duration;
+          meshCamera.playing = false;
+          applyClipFrame(canvas._geom);
+          redraw(canvas);
+          paintAnimReadout(clip);
+          if (window.render) render();
+          return;
+        }
+        if (duration > 0 && meshCamera.loop !== false && meshCamera.time > duration) meshCamera.time %= duration;
+        applyClipFrame(canvas._geom);
+        paintAnimReadout(clip);
+        dirty = true;
+      }
+    }
+    if (meshCamera.auto && canvas && !canvas._drag && canvas._geom) {
+      meshCamera.yaw += 0.012;
+      dirty = true;
+    }
+    if (dirty && canvas) redraw(canvas);
   };
   meshSpin = requestAnimationFrame(tick);
+}
+
+function paintAnimReadout(clip) {
+  const slider = document.querySelector("[data-anim-time]");
+  if (slider && document.activeElement !== slider) slider.value = String(meshCamera.time || 0);
+  const readout = document.querySelector("[data-anim-readout]");
+  if (readout) {
+    const duration = Number(clip && clip.duration) || 0;
+    readout.textContent = `${(Number(meshCamera.time) || 0).toFixed(2)}s / ${duration.toFixed(2)}s`;
+  }
 }
 
 function redraw(canvas) {
@@ -1654,11 +1709,20 @@ function boneList(humanoid) {
 function applyPose(geom) {
   if (!geom.rig) return;
   if (!geom.bindPositions) geom.bindPositions = geom.positions.map((point) => [point[0], point[1], point[2]]);
+  if (!geom._bindWorlds) {
+    const saved = geom._animLocals;
+    geom._animLocals = null;
+    geom._bindWorlds = boneWorlds(geom, {});
+    geom._animLocals = saved;
+  }
   if (!geom.bindCenter) {
     const saved = meshCamera.pose;
+    const savedAnim = geom._animLocals;
     meshCamera.pose = {};
+    geom._animLocals = null;
     const bind = posedPositions(geom);
     meshCamera.pose = saved;
+    geom._animLocals = savedAnim;
     geom.bindCenter = centerOf(bind);
     geom.half = halfOf(bind, geom.bindCenter);
   }
@@ -1694,6 +1758,8 @@ function halfOf(points, center) {
 function posedPositions(geom) {
   const worlds = boneWorlds(geom, meshCamera.pose || {});
   geom._worlds = worlds;
+  const shift = animRootShift(geom, worlds);
+  geom._animShift = shift;
   const mats = new Map();
   geom.rig.uses.forEach((use, useIndex) => {
     const skin = geom.rig.skins[use.skin];
@@ -1708,7 +1774,7 @@ function posedPositions(geom) {
     const point = delta ? [base[0] + delta[0], base[1] + delta[1], base[2] + delta[2]] : base;
     const influence = geom.influences && geom.influences[i];
     if (!influence) {
-      out[i] = [point[0], point[1], point[2]];
+      out[i] = [point[0] - shift[0], point[1] - shift[1], point[2] - shift[2]];
       continue;
     }
     const use = geom.rig.uses[influence.use];
@@ -1727,9 +1793,41 @@ function posedPositions(geom) {
       covered += weight;
     }
     const skinned = covered ? acc : [point[0], point[1], point[2]];
-    out[i] = mulPoint(use.meshWorld, skinned);
+    const placed = mulPoint(use.meshWorld, skinned);
+    out[i] = [placed[0] - shift[0], placed[1] - shift[1], placed[2] - shift[2]];
   }
   return out;
+}
+
+function animRootShift(geom, worlds) {
+  if (!geom._animLocals || !geom._bindWorlds) return [0, 0, 0];
+  let node = geom.humanoid && geom.humanoid.hips != null ? geom.humanoid.hips : -1;
+  if (node < 0) {
+    let best = -1;
+    let bestDepth = Infinity;
+    Object.keys(geom._animLocals).forEach((key) => {
+      const local = geom._animLocals[key];
+      if (!local || !local.t) return;
+      const index = Number(key);
+      let depth = 0;
+      let cursor = index;
+      const seen = new Set();
+      while (cursor >= 0 && !seen.has(cursor)) {
+        seen.add(cursor);
+        cursor = geom.rig.parent[cursor];
+        depth += 1;
+      }
+      if (depth < bestDepth) {
+        bestDepth = depth;
+        best = index;
+      }
+    });
+    node = best;
+  }
+  const now = worlds[node];
+  const bind = geom._bindWorlds[node];
+  if (!now || !bind) return [0, 0, 0];
+  return [now[12] - bind[12], 0, now[14] - bind[14]];
 }
 
 function boneWorlds(geom, pose) {
@@ -1746,8 +1844,12 @@ function boneWorlds(geom, pose) {
   const walk = (index) => {
     if (cache[index]) return cache[index];
     const node = nodes[index] || { t: [0, 0, 0], r: [0, 0, 0, 1], s: [1, 1, 1], matrix: null };
+    const anim = geom._animLocals && geom._animLocals[index];
+    const translation = anim && anim.t ? anim.t : node.t;
+    const rotation = override.has(index) ? override.get(index) : (anim && anim.r ? anim.r : node.r);
+    const scale = anim && anim.s ? anim.s : node.s;
     let local;
-    if (override.has(index) || !node.matrix) local = nodeMatrix({ translation: node.t, rotation: override.get(index) || node.r, scale: node.s });
+    if (override.has(index) || anim || !node.matrix) local = nodeMatrix({ translation, rotation, scale });
     else local = node.matrix;
     const above = parent[index];
     cache[index] = above == null || above < 0 ? local : mul(walk(above), local);
@@ -1760,11 +1862,12 @@ function boneWorlds(geom, pose) {
 function markerPoints(geom) {
   const worlds = geom._worlds || [];
   const center = geom.bindCenter || [0, 0, 0];
+  const shift = geom._animShift || [0, 0, 0];
   return (geom.boneList || []).filter((bone) => bone.group !== "Hands" || bone.name === meshCamera.selected).map((bone) => {
     const matrix = worlds[geom.humanoid[bone.name]] || identityMatrix();
     return {
       name: bone.name,
-      point: [matrix[12] - center[0], matrix[13] - center[1], matrix[14] - center[2]],
+      point: [matrix[12] - shift[0] - center[0], matrix[13] - shift[1] - center[1], matrix[14] - shift[2] - center[2]],
     };
   });
 }
@@ -1775,7 +1878,8 @@ function gizmoLines(geom) {
   const matrix = geom._worlds && geom._worlds[node];
   if (!matrix) return [];
   const center = geom.bindCenter || [0, 0, 0];
-  const origin = [matrix[12] - center[0], matrix[13] - center[1], matrix[14] - center[2]];
+  const shift = geom._animShift || [0, 0, 0];
+  const origin = [matrix[12] - shift[0] - center[0], matrix[13] - shift[1] - center[1], matrix[14] - shift[2] - center[2]];
   const len = Math.max((geom.half && geom.half[1]) || 0.2, 0.05) * 0.28;
   return [
     ["x", [matrix[0], matrix[1], matrix[2]], [0.95, 0.28, 0.24]],
@@ -1983,11 +2087,242 @@ function meshPoseInfo() {
   };
 }
 
+function collectClips(document, bin) {
+  const clips = [];
+  for (const anim of document.animations || []) {
+    if (!anim) continue;
+    const channels = [];
+    let duration = 0;
+    const samplers = anim.samplers || [];
+    for (const channel of anim.channels || []) {
+      const target = (channel && channel.target) || {};
+      const path = target.path;
+      if (!["translation", "rotation", "scale"].includes(path) || !Number.isInteger(target.node)) continue;
+      const sampler = samplers[channel.sampler];
+      if (!sampler) continue;
+      let interpolation = sampler.interpolation || "LINEAR";
+      if (!["LINEAR", "STEP", "CUBICSPLINE"].includes(interpolation)) interpolation = "LINEAR";
+      let times;
+      let values;
+      try {
+        times = readFloats(document, bin, sampler.input).map((row) => row[0]);
+        values = readFloats(document, bin, sampler.output);
+      } catch (_error) {
+        continue;
+      }
+      if (!times.length || !values.length) continue;
+      if ((interpolation === "CUBICSPLINE" ? times.length * 3 : times.length) !== values.length) continue;
+      duration = Math.max(duration, times[times.length - 1]);
+      channels.push({ node: target.node, path, interpolation, times, values });
+    }
+    if (!channels.length) continue;
+    clips.push({ name: String(anim.name || "").trim() || `Clip ${clips.length + 1}`, duration, channels });
+  }
+  return clips;
+}
+
+function readFloats(document, bin, index) {
+  const accessor = document.accessors && document.accessors[index];
+  const view = accessor ? document.bufferViews[accessor.bufferView] : null;
+  const width = { SCALAR: 1, VEC2: 2, VEC3: 3, VEC4: 4 }[accessor && accessor.type];
+  if (!accessor || !view || accessor.componentType !== 5126 || !width || accessor.sparse) {
+    throw new Error("That animation uses a format Koma cannot read.");
+  }
+  const start = (view.byteOffset || 0) + (accessor.byteOffset || 0);
+  const stride = view.byteStride || width * 4;
+  const data = new DataView(bin.buffer, bin.byteOffset, bin.byteLength);
+  const values = [];
+  for (let i = 0; i < accessor.count; i += 1) {
+    const at = start + i * stride;
+    const row = [];
+    for (let k = 0; k < width; k += 1) row.push(data.getFloat32(at + k * 4, true));
+    values.push(row);
+  }
+  return values;
+}
+
+function activeClip(geom) {
+  const clips = geom && geom.clips;
+  if (!clips || meshCamera.clip < 0 || meshCamera.clip >= clips.length) return null;
+  return clips[meshCamera.clip];
+}
+
+function applyClipFrame(geom) {
+  if (!geom || !geom.rig) return;
+  const clip = activeClip(geom);
+  geom._animLocals = clip ? sampleClip(clip, meshCamera.time || 0, meshCamera.loop !== false) : null;
+  applyPose(geom);
+}
+
+function installAnimationClips(clips) {
+  const canvas = document.querySelector("canvas[data-mesh-id]");
+  const geom = canvas && canvas._geom;
+  if (!geom || !geom.rig) return 0;
+  const imported = (clips || []).map((clip, index) => ({
+    name: String((clip && clip.name) || `Imported ${index + 1}`),
+    duration: Number(clip && clip.duration) || 0,
+    channels: (clip && clip.channels) || [],
+    imported: true,
+  })).filter((clip) => clip.channels.length);
+  geom.clips = (geom.clips || []).filter((clip) => !clip.imported).concat(imported);
+  if (!imported.length) return 0;
+  meshCamera.clip = geom.clips.length - imported.length;
+  meshCamera.time = 0;
+  meshCamera.playing = false;
+  applyClipFrame(geom);
+  if (canvas) redraw(canvas);
+  return imported.length;
+}
+
+function sampleClip(clip, time, loop) {
+  const duration = Number(clip.duration) || 0;
+  const at = clipTime(duration, Number(time) || 0, loop !== false);
+  const posed = {};
+  for (const channel of clip.channels || []) {
+    const sampled = sampleChannel(channel.times, channel.values, at, channel.interpolation || "LINEAR");
+    if (!sampled.length) continue;
+    const slot = posed[channel.node] || (posed[channel.node] = {});
+    if (channel.path === "translation") slot.t = sampled.slice(0, 3);
+    else if (channel.path === "rotation") slot.r = normalizeQuat(sampled.slice(0, 4));
+    else if (channel.path === "scale") slot.s = sampled.slice(0, 3);
+  }
+  return posed;
+}
+
+function clipTime(duration, time, loop) {
+  if (!(duration > 0)) return 0;
+  if (loop) {
+    if (time < 0) return duration + (time % duration);
+    if (time > duration) return time % duration;
+    return time;
+  }
+  return Math.max(0, Math.min(duration, time));
+}
+
+function sampleChannel(times, values, time, interpolation) {
+  if (!times || !times.length || !values || !values.length) return [];
+  const mode = interpolation || "LINEAR";
+  const quat = keyValue(values, 0, mode).length === 4;
+  const finish = (row) => (quat ? normalizeQuat(row) : row.slice());
+  if (time <= times[0]) return finish(keyValue(values, 0, mode));
+  if (time >= times[times.length - 1]) return finish(keyValue(values, times.length - 1, mode));
+  let hi = 1;
+  while (hi < times.length && times[hi] < time) hi += 1;
+  const lo = hi - 1;
+  const span = times[hi] - times[lo];
+  const local = span <= 1e-8 ? 0 : (time - times[lo]) / span;
+  if (mode === "STEP") return finish(keyValue(values, lo, mode));
+  if (mode === "CUBICSPLINE") {
+    const row = cubicPoint(values, lo, local, span);
+    return quat ? normalizeQuat(row) : row;
+  }
+  const start = keyValue(values, lo, mode);
+  const end = keyValue(values, hi, mode);
+  if (start.length === 4 && end.length === 4) return quatSlerp(start, end, local);
+  return start.map((value, index) => value + (end[index] - value) * local);
+}
+
+function keyValue(values, index, interpolation) {
+  if (interpolation === "CUBICSPLINE") return values[index * 3 + 1].slice();
+  return values[index].slice();
+}
+
+function cubicPoint(values, lo, t, dt) {
+  const start = values[lo * 3 + 1];
+  const outTangent = values[lo * 3 + 2];
+  const end = values[(lo + 1) * 3 + 1];
+  const inTangent = values[(lo + 1) * 3];
+  const t2 = t * t;
+  const t3 = t2 * t;
+  const h00 = 2 * t3 - 3 * t2 + 1;
+  const h10 = t3 - 2 * t2 + t;
+  const h01 = -2 * t3 + 3 * t2;
+  const h11 = t3 - t2;
+  return start.map((value, index) => h00 * value + h10 * dt * outTangent[index] + h01 * end[index] + h11 * dt * inTangent[index]);
+}
+
+function quatSlerp(a, b, t) {
+  const start = normalizeQuat(a);
+  let end = normalizeQuat(b);
+  let dot = start[0] * end[0] + start[1] * end[1] + start[2] * end[2] + start[3] * end[3];
+  if (dot < 0) {
+    end = [-end[0], -end[1], -end[2], -end[3]];
+    dot = -dot;
+  }
+  if (dot > 0.9995) return normalizeQuat(start.map((value, index) => value + (end[index] - value) * t));
+  const theta = Math.acos(Math.min(1, dot));
+  const sine = Math.sin(theta);
+  if (Math.abs(sine) < 1e-8) return start;
+  const w1 = Math.sin((1 - t) * theta) / sine;
+  const w2 = Math.sin(t * theta) / sine;
+  return start.map((value, index) => value * w1 + end[index] * w2);
+}
+
+function posedExportPayload(geom) {
+  const positions = [];
+  const uvs = [];
+  for (const point of geom.positions) positions.push(point[0], point[1], point[2]);
+  for (const uv of geom.uvs || []) uvs.push(uv[0], uv[1]);
+  const used = new Map();
+  const images = [];
+  const ranges = (geom.ranges || []).map((range) => {
+    const mat = materialAt(geom, range.material);
+    const color = (mat && mat.color) || [0.78, 0.78, 0.8];
+    let image = -1;
+    const source = geom.images && mat ? geom.images[mat.imageIndex] : null;
+    const bytes = source && source.bytes;
+    if (bytes && bytes.length && bytes.length <= 2000000) {
+      if (!used.has(mat.imageIndex)) {
+        used.set(mat.imageIndex, images.length);
+        let raw = "";
+        const chunk = 0x8000;
+        for (let offset = 0; offset < bytes.length; offset += chunk) {
+          raw += String.fromCharCode.apply(null, bytes.subarray(offset, offset + chunk));
+        }
+        images.push(btoa(raw));
+      }
+      image = used.get(mat.imageIndex);
+    }
+    return { start: range.start, count: range.count, color: [color[0], color[1], color[2]], image };
+  });
+  return { positions, indices: geom.indices, uvs, ranges, images };
+}
+
+function meshAnimInfo() {
+  const canvas = document.querySelector("canvas[data-mesh-id]");
+  const geom = canvas && canvas._geom;
+  const clip = geom && activeClip(geom);
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (const point of (geom && geom.positions) || []) {
+    minX = Math.min(minX, point[0]);
+    maxX = Math.max(maxX, point[0]);
+    minY = Math.min(minY, point[1]);
+    maxY = Math.max(maxY, point[1]);
+  }
+  return {
+    clips: ((geom && geom.clips) || []).map((item) => item.name),
+    clip: meshCamera.clip,
+    time: meshCamera.time || 0,
+    playing: Boolean(meshCamera.playing),
+    duration: clip ? clip.duration : 0,
+    rig: Boolean(geom && geom.rig),
+    minX, maxX, minY, maxY,
+  };
+}
+
 window.boneEuler = boneEuler;
 window.setPoseAxis = setPoseAxis;
 window.refreshMeshPose = refreshMeshPose;
 window.applyPosePreset = applyPosePreset;
 window.meshPoseInfo = meshPoseInfo;
+window.sampleChannel = sampleChannel;
+window.applyClipFrame = applyClipFrame;
+window.installAnimationClips = installAnimationClips;
+window.posedExportPayload = posedExportPayload;
+window.meshAnimInfo = meshAnimInfo;
 
 const POSE_ORDER = [
   "hips", "spine", "chest", "upperChest", "neck", "head",

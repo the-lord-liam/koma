@@ -137,6 +137,141 @@ def pack_glb(vertices: list[tuple[float, float, float]], indices: list[int]) -> 
     return _assemble(document, blob)
 
 
+def bake_posed_glb(
+    positions: list[tuple[float, float, float]],
+    indices: list[int],
+    uvs: list[tuple[float, float]] | None = None,
+    ranges: list[dict] | None = None,
+    images: list[bytes] | None = None,
+) -> bytes:
+    """Write the posed mesh as a new GLB. The file it came from is not changed."""
+    if len(positions) < 3 or len(indices) < 3 or len(indices) % 3:
+        raise MeshError("That posed model has no faces.")
+    count = len(positions)
+    for index in indices:
+        if not isinstance(index, int) or isinstance(index, bool) or index < 0 or index >= count:
+            raise MeshError("That posed model has a face Koma cannot write.")
+    if not uvs or len(uvs) != count:
+        uvs = [(0.0, 0.0)] * count
+    if not ranges:
+        ranges = [{"start": 0, "count": len(indices), "color": (0.78, 0.78, 0.8), "image": None}]
+    images = [raw for raw in (images or []) if isinstance(raw, (bytes, bytearray)) and raw]
+    normals = _vertex_normals(positions, indices)
+    blob = bytearray()
+    views: list[dict] = []
+    accessors: list[dict] = []
+    xs = [point[0] for point in positions]
+    ys = [point[1] for point in positions]
+    zs = [point[2] for point in positions]
+    position_view = _append_view(blob, views, b"".join(struct.pack("<3f", *point) for point in positions), 34962)
+    normal_view = _append_view(blob, views, b"".join(struct.pack("<3f", *normal) for normal in normals), 34962)
+    uv_view = _append_view(blob, views, b"".join(struct.pack("<2f", u, v) for u, v in uvs), 34962)
+    accessors.extend(
+        [
+            {
+                "bufferView": position_view,
+                "componentType": 5126,
+                "count": count,
+                "type": "VEC3",
+                "min": [min(xs), min(ys), min(zs)],
+                "max": [max(xs), max(ys), max(zs)],
+            },
+            {"bufferView": normal_view, "componentType": 5126, "count": count, "type": "VEC3"},
+            {"bufferView": uv_view, "componentType": 5126, "count": count, "type": "VEC2"},
+        ]
+    )
+    primitives = []
+    materials = []
+    for raw in ranges:
+        if not isinstance(raw, dict):
+            continue
+        start = int(raw.get("start") or 0)
+        length = int(raw.get("count") or 0)
+        if length < 3 or length % 3 or start < 0 or start + length > len(indices):
+            continue
+        color = raw.get("color") or (0.78, 0.78, 0.8)
+        try:
+            rgb = [min(1.0, max(0.0, float(color[0]))), min(1.0, max(0.0, float(color[1]))), min(1.0, max(0.0, float(color[2])))]
+        except (TypeError, ValueError, IndexError):
+            rgb = [0.78, 0.78, 0.8]
+        material: dict = {
+            "doubleSided": True,
+            "pbrMetallicRoughness": {
+                "baseColorFactor": [rgb[0], rgb[1], rgb[2], 1.0],
+                "metallicFactor": 0.0,
+                "roughnessFactor": 1.0,
+            },
+        }
+        image_index = raw.get("image")
+        if isinstance(image_index, int) and not isinstance(image_index, bool) and 0 <= image_index < len(images):
+            material["pbrMetallicRoughness"]["baseColorTexture"] = {"index": image_index}
+        materials.append(material)
+        index_bytes, component = _index_bytes(list(indices[start : start + length]))
+        index_view = _append_view(blob, views, index_bytes, 34963)
+        accessors.append({"bufferView": index_view, "componentType": component, "count": length, "type": "SCALAR"})
+        primitives.append(
+            {
+                "attributes": {"POSITION": 0, "NORMAL": 1, "TEXCOORD_0": 2},
+                "indices": len(accessors) - 1,
+                "material": len(materials) - 1,
+                "mode": 4,
+            }
+        )
+    if not primitives:
+        raise MeshError("That posed model has no faces.")
+    _append_images(blob, views, images)
+    document: dict = {
+        "asset": {"version": "2.0", "generator": "koma"},
+        "scene": 0,
+        "scenes": [{"nodes": [0]}],
+        "nodes": [{"mesh": 0, "name": "Posed"}],
+        "meshes": [{"name": "Posed", "primitives": primitives}],
+        "materials": materials,
+        "buffers": [{"byteLength": len(blob)}],
+        "bufferViews": views,
+        "accessors": accessors,
+    }
+    if images:
+        image_views = list(range(len(views) - len(images), len(views)))
+        document["images"] = [
+            {"bufferView": view_index, "mimeType": _image_kind(bytes(raw))[1]}
+            for raw, view_index in zip(images, image_views)
+        ]
+        document["textures"] = [{"sampler": 0, "source": index} for index in range(len(images))]
+        document["samplers"] = [{"magFilter": 9729, "minFilter": 9729, "wrapS": 10497, "wrapT": 10497}]
+    declared = len(blob)
+    blob.extend(b"\x00" * ((4 - (declared % 4)) % 4))
+    document["buffers"][0]["byteLength"] = declared
+    return _assemble(document, bytes(blob))
+
+
+def _vertex_normals(
+    positions: list[tuple[float, float, float]],
+    indices: list[int],
+) -> list[tuple[float, float, float]]:
+    totals = [[0.0, 0.0, 0.0] for _ in positions]
+    for offset in range(0, len(indices) - 2, 3):
+        a, b, c = indices[offset], indices[offset + 1], indices[offset + 2]
+        ax, ay, az = positions[a]
+        bx, by, bz = positions[b]
+        cx, cy, cz = positions[c]
+        nx = (by - ay) * (cz - az) - (bz - az) * (cy - ay)
+        ny = (bz - az) * (cx - ax) - (bx - ax) * (cz - az)
+        nz = (bx - ax) * (cy - ay) - (by - ay) * (cx - ax)
+        for index in (a, b, c):
+            totals[index][0] += nx
+            totals[index][1] += ny
+            totals[index][2] += nz
+    normals = []
+    for nx, ny, nz in totals:
+        length = math.sqrt(nx * nx + ny * ny + nz * nz)
+        if length < 1e-8:
+            normals.append((0.0, 1.0, 0.0))
+        else:
+            normals.append((nx / length, ny / length, nz / length))
+    return normals
+
+
 def parse_glb(data: bytes) -> tuple[list[tuple[float, float, float]], list[int]]:
     document, blob = _chunks(data)
     positions: list[tuple[float, float, float]] = []
@@ -498,6 +633,344 @@ def _take_chain(assigned: dict[str, int], used: set[int], chain: list[int], slot
         assigned[bone] = chain[cursor]
         used.add(chain[cursor])
         cursor += 1
+
+
+def animation_clips(data: bytes) -> list[dict]:
+    """Joint clips stored in a GLB or VRM. Weights and sparse tracks are skipped."""
+    document, blob = _chunks(data)
+    clips = []
+    for anim in document.get("animations") or []:
+        if not isinstance(anim, dict):
+            continue
+        channels = []
+        duration = 0.0
+        samplers = anim.get("samplers") or []
+        for channel in anim.get("channels") or []:
+            if not isinstance(channel, dict):
+                continue
+            target = channel.get("target") or {}
+            path = target.get("path")
+            node = target.get("node")
+            sampler_index = channel.get("sampler")
+            if path not in {"translation", "rotation", "scale"} or not isinstance(node, int):
+                continue
+            if not isinstance(sampler_index, int) or sampler_index < 0 or sampler_index >= len(samplers):
+                continue
+            sampler = samplers[sampler_index] or {}
+            interpolation = sampler.get("interpolation") or "LINEAR"
+            if interpolation not in {"LINEAR", "STEP", "CUBICSPLINE"}:
+                interpolation = "LINEAR"
+            times = [row[0] for row in _read_float_vectors(document, blob, sampler.get("input"))]
+            values = _read_float_vectors(document, blob, sampler.get("output"))
+            if len(times) < 1 or not values:
+                continue
+            if interpolation == "CUBICSPLINE":
+                if len(values) != len(times) * 3:
+                    continue
+            elif len(values) != len(times):
+                continue
+            duration = max(duration, times[-1])
+            channels.append(
+                {
+                    "node": node,
+                    "path": path,
+                    "interpolation": interpolation,
+                    "times": times,
+                    "values": values,
+                }
+            )
+        if not channels:
+            continue
+        name = str(anim.get("name") or "").strip() or f"Clip {len(clips) + 1}"
+        clips.append({"name": name, "duration": duration, "channels": channels})
+    return clips
+
+
+def sample_channel(times: list[float], values: list[list[float]], time: float, interpolation: str) -> list[float]:
+    """One track at `time`. Rotation LINEAR uses slerp. Cubic uses the glTF spline."""
+    if not times or not values:
+        return []
+    interpolation = interpolation or "LINEAR"
+    if time <= times[0]:
+        return _quat_norm(_key_value(values, 0, interpolation)) if _is_quat(values, interpolation) else list(_key_value(values, 0, interpolation))
+    if time >= times[-1]:
+        last = len(times) - 1
+        picked = _key_value(values, last, interpolation)
+        return _quat_norm(picked) if _is_quat(values, interpolation) else list(picked)
+    hi = 1
+    while hi < len(times) and times[hi] < time:
+        hi += 1
+    lo = hi - 1
+    span = times[hi] - times[lo]
+    local = 0.0 if span <= 1e-8 else (time - times[lo]) / span
+    if interpolation == "STEP":
+        picked = _key_value(values, lo, interpolation)
+        return _quat_norm(picked) if _is_quat(values, interpolation) else list(picked)
+    if interpolation == "CUBICSPLINE":
+        picked = _cubic_point(values, lo, local, span)
+        return _quat_norm(picked) if len(picked) == 4 else picked
+    start = _key_value(values, lo, interpolation)
+    end = _key_value(values, hi, interpolation)
+    if len(start) == 4 and len(end) == 4:
+        return _quat_slerp(start, end, local)
+    return [start[index] + (end[index] - start[index]) * local for index in range(len(start))]
+
+
+def sample_clip(clip: dict, time: float, loop: bool = True) -> dict[int, dict[str, list[float]]]:
+    """Local translation, rotation, and scale for each animated node."""
+    duration = float(clip.get("duration") or 0.0)
+    at = _clip_time(duration, float(time), loop)
+    posed: dict[int, dict[str, list[float]]] = {}
+    for channel in clip.get("channels") or []:
+        sampled = sample_channel(channel["times"], channel["values"], at, channel.get("interpolation") or "LINEAR")
+        if not sampled:
+            continue
+        node = int(channel["node"])
+        slot = posed.setdefault(node, {})
+        path = channel["path"]
+        if path == "translation":
+            slot["translation"] = sampled[:3]
+        elif path == "rotation":
+            slot["rotation"] = _quat_norm(sampled[:4])
+        elif path == "scale":
+            slot["scale"] = sampled[:3]
+    return posed
+
+
+def retarget_clips(source: bytes, target: bytes) -> list[dict]:
+    """Copy clips onto `target` by bone name, then by the humanoid map.
+
+    Same names keep the authored tracks. A humanoid match turns each rotation
+    into the same change from that bone's bind pose, and scales hip travel by
+    the two bodies. The source file is not modified.
+    """
+    source_doc, _source_blob = _chunks(source)
+    target_doc, _target_blob = _chunks(target)
+    source_nodes = source_doc.get("nodes") or []
+    target_nodes = target_doc.get("nodes") or []
+    if not isinstance(source_nodes, list) or not isinstance(target_nodes, list):
+        raise MeshError("That animation does not match this rig.")
+    clips = animation_clips(source)
+    if not clips:
+        raise MeshError("That file has no animation.")
+    target_by_name: dict[str, int] = {}
+    for index, node in enumerate(target_nodes):
+        if not isinstance(node, dict):
+            continue
+        key = _compact_name(str(node.get("name") or ""))
+        if key and key not in target_by_name:
+            target_by_name[key] = index
+    mapping: dict[int, tuple[int, str]] = {}
+    for index, node in enumerate(source_nodes):
+        if not isinstance(node, dict):
+            continue
+        key = _compact_name(str(node.get("name") or ""))
+        if key and key in target_by_name:
+            mapping[index] = (target_by_name[key], "name")
+    source_human = humanoid_bones(source)
+    target_human = humanoid_bones(target)
+    humanoid_hits = 0
+    for bone, src in source_human.items():
+        dst = target_human.get(bone)
+        if not isinstance(src, int) or not isinstance(dst, int) or src in mapping:
+            continue
+        mapping[src] = (dst, "humanoid")
+        humanoid_hits += 1
+    name_hits = sum(1 for _src, (_dst, kind) in mapping.items() if kind == "name")
+    if name_hits < 1 and humanoid_hits < 6:
+        raise MeshError("That animation does not match this rig.")
+    scale = _body_scale(source_doc, target_doc, source_human, target_human)
+    source_hips = source_human.get("hips")
+    out = []
+    for clip in clips:
+        channels = []
+        for channel in clip["channels"]:
+            mapped = mapping.get(channel["node"])
+            if not mapped:
+                continue
+            dst, kind = mapped
+            path = channel["path"]
+            if kind == "humanoid" and path == "scale":
+                continue
+            times = list(channel["times"])
+            values = [list(row) for row in channel["values"]]
+            interpolation = channel["interpolation"]
+            if kind == "humanoid" and interpolation == "CUBICSPLINE":
+                values = [_key_value(values, index, interpolation) for index in range(len(times))]
+                interpolation = "LINEAR"
+            if kind == "humanoid" and path == "rotation":
+                source_rest = _node_rotation(source_nodes, channel["node"])
+                target_rest = _node_rotation(target_nodes, dst)
+                turn = _quat_mul(target_rest, _quat_inv(source_rest))
+                values = [_quat_norm(_quat_mul(turn, value)) for value in values]
+            elif kind == "humanoid" and path == "translation" and channel["node"] == source_hips:
+                source_rest = _node_translation(source_nodes, channel["node"])
+                target_rest = _node_translation(target_nodes, dst)
+                values = [
+                    [target_rest[axis] + (value[axis] - source_rest[axis]) * scale for axis in range(3)]
+                    for value in values
+                ]
+            elif kind == "humanoid" and path == "translation":
+                continue
+            channels.append(
+                {
+                    "node": dst,
+                    "path": path,
+                    "interpolation": interpolation,
+                    "times": times,
+                    "values": values,
+                }
+            )
+        if channels:
+            out.append({"name": clip["name"], "duration": clip["duration"], "channels": channels})
+    if not out:
+        raise MeshError("That animation does not match this rig.")
+    return out
+
+
+def _clip_time(duration: float, time: float, loop: bool) -> float:
+    if duration <= 0:
+        return 0.0
+    if loop:
+        if time < 0:
+            return duration + (time % duration)
+        if time > duration:
+            return time % duration
+        return time
+    return max(0.0, min(duration, time))
+
+
+def _is_quat(values: list[list[float]], interpolation: str) -> bool:
+    sample = _key_value(values, 0, interpolation)
+    return len(sample) == 4
+
+
+def _key_value(values: list[list[float]], index: int, interpolation: str) -> list[float]:
+    if interpolation == "CUBICSPLINE":
+        return list(values[index * 3 + 1])
+    return list(values[index])
+
+
+def _cubic_point(values: list[list[float]], lo: int, t: float, dt: float) -> list[float]:
+    start = values[lo * 3 + 1]
+    out_tangent = values[lo * 3 + 2]
+    end = values[(lo + 1) * 3 + 1]
+    in_tangent = values[(lo + 1) * 3]
+    t2 = t * t
+    t3 = t2 * t
+    h00 = 2 * t3 - 3 * t2 + 1
+    h10 = t3 - 2 * t2 + t
+    h01 = -2 * t3 + 3 * t2
+    h11 = t3 - t2
+    return [
+        h00 * start[index] + h10 * dt * out_tangent[index] + h01 * end[index] + h11 * dt * in_tangent[index]
+        for index in range(len(start))
+    ]
+
+
+def _node_rotation(nodes: list, index: int) -> list[float]:
+    node = nodes[index] if isinstance(index, int) and 0 <= index < len(nodes) and isinstance(nodes[index], dict) else {}
+    rotation = node.get("rotation") or [0.0, 0.0, 0.0, 1.0]
+    try:
+        return _quat_norm([float(rotation[0]), float(rotation[1]), float(rotation[2]), float(rotation[3])])
+    except (TypeError, ValueError, IndexError):
+        return [0.0, 0.0, 0.0, 1.0]
+
+
+def _node_translation(nodes: list, index: int) -> list[float]:
+    node = nodes[index] if isinstance(index, int) and 0 <= index < len(nodes) and isinstance(nodes[index], dict) else {}
+    translation = node.get("translation") or [0.0, 0.0, 0.0]
+    try:
+        return [float(translation[0]), float(translation[1]), float(translation[2])]
+    except (TypeError, ValueError, IndexError):
+        return [0.0, 0.0, 0.0]
+
+
+def _body_scale(source_doc: dict, target_doc: dict, source_human: dict[str, int], target_human: dict[str, int]) -> float:
+    source = _bone_span(source_doc, source_human)
+    target = _bone_span(target_doc, target_human)
+    if source < 1e-5:
+        return 1.0
+    ratio = target / source
+    if ratio < 0.05 or ratio > 20:
+        return 1.0
+    return ratio
+
+
+def _bone_span(document: dict, human: dict[str, int]) -> float:
+    nodes = document.get("nodes") or []
+    worlds = _world_matrices(nodes, document.get("scenes") or [])
+    start = human.get("hips")
+    end = human.get("head")
+    if end is None:
+        end = human.get("neck")
+    if not isinstance(start, int) or not isinstance(end, int):
+        return 1.0
+    if start < 0 or end < 0 or start >= len(worlds) or end >= len(worlds):
+        return 1.0
+    dx = worlds[start][12] - worlds[end][12]
+    dy = worlds[start][13] - worlds[end][13]
+    dz = worlds[start][14] - worlds[end][14]
+    return math.sqrt(dx * dx + dy * dy + dz * dz) or 1.0
+
+
+def _quat_mul(a: list[float], b: list[float]) -> list[float]:
+    ax, ay, az, aw = a
+    bx, by, bz, bw = b
+    return [
+        aw * bx + ax * bw + ay * bz - az * by,
+        aw * by - ax * bz + ay * bw + az * bx,
+        aw * bz + ax * by - ay * bx + az * bw,
+        aw * bw - ax * bx - ay * by - az * bz,
+    ]
+
+
+def _quat_inv(quat: list[float]) -> list[float]:
+    x, y, z, w = quat
+    length = x * x + y * y + z * z + w * w or 1.0
+    return [-x / length, -y / length, -z / length, w / length]
+
+
+def _quat_norm(quat: list[float]) -> list[float]:
+    length = math.sqrt(sum(value * value for value in quat[:4])) or 1.0
+    return [value / length for value in quat[:4]]
+
+
+def _quat_slerp(a: list[float], b: list[float], t: float) -> list[float]:
+    start = _quat_norm(a)
+    end = _quat_norm(b)
+    dot = sum(start[index] * end[index] for index in range(4))
+    if dot < 0:
+        end = [-value for value in end]
+        dot = -dot
+    if dot > 0.9995:
+        return _quat_norm([start[index] + (end[index] - start[index]) * t for index in range(4)])
+    theta = math.acos(min(1.0, dot))
+    sine = math.sin(theta)
+    if abs(sine) < 1e-8:
+        return start
+    w1 = math.sin((1.0 - t) * theta) / sine
+    w2 = math.sin(t * theta) / sine
+    return [start[index] * w1 + end[index] * w2 for index in range(4)]
+
+
+def _read_float_vectors(document: dict, blob: bytes, accessor_index: int) -> list[list[float]]:
+    accessor, view, blob = _view(document, blob, accessor_index)
+    if accessor.get("sparse"):
+        raise MeshError("That animation uses a format Koma cannot read.")
+    width = {"SCALAR": 1, "VEC2": 2, "VEC3": 3, "VEC4": 4}.get(accessor.get("type"))
+    if accessor.get("componentType") != 5126 or not width:
+        raise MeshError("That animation uses a format Koma cannot read.")
+    count = int(accessor.get("count") or 0)
+    start = int(view.get("byteOffset") or 0) + int(accessor.get("byteOffset") or 0)
+    stride = int(view.get("byteStride") or (4 * width))
+    values = []
+    for index in range(count):
+        offset = start + index * stride
+        if offset + 4 * width > len(blob):
+            break
+        values.append(list(struct.unpack_from(f"<{width}f", blob, offset)))
+    return values
 
 
 def obj_from_glb(data: bytes) -> bytes:

@@ -1094,6 +1094,7 @@ function characterMesh(person) {
       </div>
       ${current ? `<div class="mesh-side"><p class="meta">Drag to orbit any way. Shift-drag pans. Alt-drag rolls. Scroll zooms.</p>
         ${shapeRow}
+        ${animControls(current)}
         ${poseControls(person, current)}
         ${shapes.length ? `<p class="meta">Expressions move morph targets and stay on while a pose is set. Front, side, and three-quarter turn the camera.</p>` : ""}
         <div class="row mesh-tools">
@@ -1112,12 +1113,43 @@ function characterMesh(person) {
           <button type="button" class="ghost" data-act="mesh-shot" data-id="${esc(person.id)}" data-mesh="${esc(current.id)}" ${state.busy ? "disabled" : ""}>Save this angle</button>
           <button type="button" class="ghost" data-act="mesh-shot" data-id="${esc(person.id)}" data-mesh="${esc(current.id)}" data-panel="${esc(state.panelId || "")}" ${state.busy || !state.panelId ? "disabled" : ""}>Use on panel</button>
           <button type="button" class="ghost" data-act="export-mesh" data-id="${esc(current.id)}" data-format="glb" ${state.busy ? "disabled" : ""}>Export GLB</button>
+          <button type="button" class="ghost" data-act="export-posed" data-id="${esc(current.id)}" ${state.busy ? "disabled" : ""}>Export posed GLB</button>
           <button type="button" class="ghost" data-act="export-mesh" data-id="${esc(current.id)}" data-format="obj" ${state.busy ? "disabled" : ""}>Export OBJ</button>
           <button type="button" class="danger" data-act="delete-mesh" data-id="${esc(current.id)}" ${state.busy ? "disabled" : ""}>Delete model</button>
         </div>
         ${older ? `<div class="row">${older}</div>` : ""}</div>` : ""}
     </section>
   `;
+}
+
+function animControls(current) {
+  const clips = (window.meshCamera && meshCamera.clips) || [];
+  const bones = (window.meshCamera && meshCamera.bones) || [];
+  if (!current || (!clips.length && !bones.length)) return "";
+  const index = meshCamera.clip;
+  const active = index >= 0 ? clips[index] : null;
+  const duration = active ? Number(active.duration) || 0 : 0;
+  const time = Math.min(Number(meshCamera.time) || 0, duration || 0);
+  const playing = Boolean(meshCamera.playing && active);
+  const loop = meshCamera.loop !== false;
+  const speed = Number(meshCamera.speed) || 1;
+  const chips = [`<button type="button" class="chip ${index < 0 ? "on" : ""}" data-act="mesh-clip" data-value="-1">Rest</button>`]
+    .concat(clips.map((clip, clipIndex) => `<button type="button" class="chip ${index === clipIndex ? "on" : ""}" data-act="mesh-clip" data-value="${clipIndex}">${esc(clip.name)}</button>`))
+    .join("");
+  const speeds = [0.5, 1, 2].map((value) => `<button type="button" class="chip ${speed === value ? "on" : ""}" data-act="mesh-speed" data-value="${value}">${value}×</button>`).join("");
+  return `
+    <div class="row mesh-tools mesh-clips">${chips}</div>
+    <div class="row mesh-tools">
+      <button type="button" class="chip ${playing ? "on" : ""}" data-act="mesh-play" ${active ? "" : "disabled"}>${playing ? "Pause" : "Play"}</button>
+      <button type="button" class="chip ${loop ? "on" : ""}" data-act="mesh-loop">Loop</button>
+      ${speeds}
+      <button type="button" class="ghost" data-act="mesh-anim-import" data-mesh="${esc(current.id)}" ${state.busy || !bones.length ? "disabled" : ""}>Import animation</button>
+    </div>
+    <label class="mesh-time">Time
+      <input type="range" min="0" max="${duration || 0}" step="0.01" value="${time}" data-anim-time aria-label="Animation time" ${active ? "" : "disabled"}>
+      <span data-anim-readout>${active ? `${time.toFixed(2)}s / ${duration.toFixed(2)}s` : "No clip"}</span>
+    </label>
+    <p class="meta">Play a clip from the file, scrub to a frame, then save that angle. Import animation reads a GLB or VRM on your machine and matches it by bone name, or by the humanoid map. It stays on this model until you switch away. Nothing is uploaded.</p>`;
 }
 
 function poseControls(person, current) {
@@ -2762,8 +2794,60 @@ const actions = {
     render();
   },
   "mesh-preset"(button) {
+    meshCamera.playing = false;
+    meshCamera.clip = -1;
+    meshCamera.time = 0;
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    if (canvas && canvas._geom) canvas._geom._animLocals = null;
     if (window.applyPosePreset) applyPosePreset(button.dataset.value || "bind");
     render();
+  },
+  "mesh-clip"(button) {
+    const index = Number(button.dataset.value);
+    meshCamera.clip = Number.isFinite(index) ? index : -1;
+    meshCamera.time = 0;
+    meshCamera.playing = false;
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    if (canvas && canvas._geom && window.applyClipFrame) {
+      applyClipFrame(canvas._geom);
+      redraw(canvas);
+    }
+    render();
+  },
+  "mesh-play"() {
+    const clips = meshCamera.clips || [];
+    if (meshCamera.clip < 0 && clips.length) meshCamera.clip = 0;
+    const clip = clips[meshCamera.clip];
+    if (!clip) return;
+    if (meshCamera.playing) meshCamera.playing = false;
+    else {
+      const duration = Number(clip.duration) || 0;
+      if (duration && meshCamera.time >= duration - 0.0001) meshCamera.time = 0;
+      meshCamera.playing = true;
+    }
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    if (canvas && canvas._geom && window.applyClipFrame) applyClipFrame(canvas._geom);
+    render();
+  },
+  "mesh-loop"() {
+    meshCamera.loop = meshCamera.loop === false;
+    render();
+  },
+  "mesh-speed"(button) {
+    const speed = Number(button.dataset.value);
+    meshCamera.speed = speed > 0 ? speed : 1;
+    render();
+  },
+  "mesh-anim-import"(button) {
+    return (async () => {
+      const picked = await rpc("shell.pick_mesh", {});
+      if (!picked || !picked.path) return;
+      await run("Importing the animation…", async () => {
+        const result = await rpc("character.mesh_anim", { id: button.dataset.mesh, path: picked.path });
+        const count = window.installAnimationClips ? installAnimationClips(result.clips || []) : 0;
+        if (!count) toast("That file has no animation for this rig.");
+      });
+    })();
   },
   "pose-save"(button) {
     const field = document.getElementById("pose-name");
@@ -2779,6 +2863,11 @@ const actions = {
     const person = (state.tree.characters || []).find((item) => item.id === button.dataset.char);
     const pose = person && (person.poses || []).find((item) => item.id === button.dataset.id);
     if (!pose || !window.meshCamera) return;
+    meshCamera.playing = false;
+    meshCamera.clip = -1;
+    meshCamera.time = 0;
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    if (canvas && canvas._geom) canvas._geom._animLocals = null;
     meshCamera.pose = pose.rotations || {};
     if (pose.shape) meshCamera.shape = pose.shape;
     meshCamera.poseMode = true;
@@ -2862,6 +2951,19 @@ const actions = {
     const format = button.dataset.format === "obj" ? "obj" : "glb";
     return run("Exporting the model…", async () => {
       const result = await rpc("character.mesh_export", { id: button.dataset.id, format });
+      toast("Saved " + result.path, "ok");
+    });
+  },
+  "export-posed"(button) {
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    const geom = canvas && canvas._geom;
+    if (!geom || canvas.dataset.ready !== "1" || !window.posedExportPayload) {
+      toast("The model is still loading.");
+      return;
+    }
+    const payload = posedExportPayload(geom);
+    return run("Exporting the posed model…", async () => {
+      const result = await rpc("character.mesh_export_posed", Object.assign({ id: button.dataset.id }, payload));
       toast("Saved " + result.path, "ok");
     });
   },
@@ -3833,6 +3935,25 @@ document.addEventListener("input", (event) => {
   if (el && el.id === "bot-draft") state.botDraft = el.value;
   if (el && el.dataset && el.dataset.poseAxis && window.setPoseAxis) {
     setPoseAxis(el.dataset.poseAxis, el.value);
+    return;
+  }
+  if (el && el.dataset && el.dataset.animTime != null && window.meshCamera) {
+    meshCamera.playing = false;
+    meshCamera.time = Number(el.value) || 0;
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    if (canvas && canvas._geom && window.applyClipFrame) {
+      applyClipFrame(canvas._geom);
+      redraw(canvas);
+    }
+    const readout = document.querySelector("[data-anim-readout]");
+    const clips = meshCamera.clips || [];
+    const clip = clips[meshCamera.clip];
+    if (readout && clip) readout.textContent = `${meshCamera.time.toFixed(2)}s / ${(Number(clip.duration) || 0).toFixed(2)}s`;
+    const play = document.querySelector("[data-act='mesh-play']");
+    if (play) {
+      play.textContent = "Play";
+      play.classList.remove("on");
+    }
     return;
   }
   if (!el.dataset || el.dataset.save !== "local") return;
