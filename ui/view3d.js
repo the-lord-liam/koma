@@ -2024,7 +2024,9 @@ function rotateSelected(canvas, drag, dx) {
   if (!name || !geom || !geom.rig || !drag.axis) return;
   const axis = drag.axis === "y" ? [0, 1, 0] : (drag.axis === "z" ? [0, 0, 1] : [1, 0, 0]);
   const spun = mulQuat(drag.quat, quatFromAxis(axis, dx * 0.01));
-  meshCamera.pose = Object.assign({}, meshCamera.pose, { [name]: normalizeQuat(spun) });
+  const pose = Object.assign({}, meshCamera.pose, { [name]: normalizeQuat(spun) });
+  clampHinges(geom, pose);
+  meshCamera.pose = pose;
   applyPose(geom);
   redraw(canvas);
 }
@@ -2046,7 +2048,9 @@ function setPoseAxis(axis, degrees) {
   const bind = geom.rig.nodes[geom.humanoid[name]].r;
   const euler = boneEuler(geom, name);
   euler[axis] = Number(degrees) || 0;
-  meshCamera.pose = Object.assign({}, meshCamera.pose, { [name]: normalizeQuat(mulQuat(bind, eulerQuat(euler.x, euler.y, euler.z))) });
+  const pose = Object.assign({}, meshCamera.pose, { [name]: normalizeQuat(mulQuat(bind, eulerQuat(euler.x, euler.y, euler.z))) });
+  clampHinges(geom, pose);
+  meshCamera.pose = pose;
   applyPose(geom);
   redraw(canvas);
 }
@@ -2378,12 +2382,12 @@ function presetTargets(name) {
     },
     walk: {
       leftUpperLeg: (axes) => mix(axes, [["up", -0.7], ["forward", 0.7]]),
-      rightUpperLeg: (axes) => mix(axes, [["up", -0.78], ["forward", -0.58]]),
-      leftLowerLeg: (axes) => mix(axes, [["up", -0.92], ["forward", -0.25]]),
-      rightLowerLeg: down,
+      rightUpperLeg: (axes) => mix(axes, [["up", -0.86], ["forward", -0.5]]),
+      leftLowerLeg: (axes) => mix(axes, [["up", -0.92], ["forward", -0.35]]),
+      rightLowerLeg: (axes) => mix(axes, [["up", -0.35], ["forward", -0.94]]),
       leftUpperArm: (axes) => mix(axes, [["up", -0.72], ["forward", -0.58], ["right", -0.22]]),
       rightUpperArm: (axes) => mix(axes, [["up", -0.68], ["forward", 0.62], ["right", 0.22]]),
-      leftLowerArm: (axes) => mix(axes, [["up", -0.7], ["forward", -0.2]]),
+      leftLowerArm: (axes) => mix(axes, [["up", -0.35], ["forward", 0.2], ["right", -0.15]]),
       rightLowerArm: (axes) => mix(axes, [["up", -0.45], ["forward", 0.75]]),
     },
     run: {
@@ -2391,22 +2395,24 @@ function presetTargets(name) {
       chest: (axes) => mix(axes, [["up", 0.8], ["forward", 0.6]]),
       leftUpperLeg: (axes) => mix(axes, [["up", -0.35], ["forward", 0.92]]),
       rightUpperLeg: (axes) => mix(axes, [["up", -0.55], ["forward", -0.8]]),
-      leftLowerLeg: (axes) => mix(axes, [["up", -0.45], ["forward", -0.85]]),
-      rightLowerLeg: (axes) => mix(axes, [["up", -0.95], ["forward", 0.15]]),
-      leftUpperArm: (axes) => mix(axes, [["up", -0.35], ["forward", -0.85], ["right", -0.2]]),
-      rightUpperArm: (axes) => mix(axes, [["up", -0.2], ["forward", 0.9], ["right", 0.25]]),
-      leftLowerArm: (axes) => mix(axes, [["up", -0.2], ["forward", -0.55]]),
-      rightLowerArm: (axes) => mix(axes, [["up", 0.15], ["forward", 0.85]]),
+      leftLowerLeg: (axes) => mix(axes, [["up", -0.7], ["forward", -0.7]]),
+      rightLowerLeg: (axes) => mix(axes, [["up", 0.15], ["forward", -0.97]]),
+      leftUpperArm: (axes) => mix(axes, [["up", -0.4], ["forward", -0.85], ["right", -0.2]]),
+      rightUpperArm: (axes) => mix(axes, [["up", -0.25], ["forward", 0.85], ["right", 0.25]]),
+      leftLowerArm: (axes) => mix(axes, [["up", -0.55], ["forward", -0.75]]),
+      rightLowerArm: (axes) => mix(axes, [["up", -0.1], ["forward", 0.65]]),
     },
     sit: {
-      spine: (axes) => mix(axes, [["up", 0.94], ["forward", 0.28]]),
-      leftUpperLeg: (axes) => mix(axes, [["forward", 0.96], ["up", -0.18]]),
-      rightUpperLeg: (axes) => mix(axes, [["forward", 0.96], ["up", -0.18]]),
+      spine: (axes) => mix(axes, [["up", 0.96], ["forward", 0.22]]),
+      leftUpperLeg: (axes) => mix(axes, [["forward", 0.97], ["up", -0.22]]),
+      rightUpperLeg: (axes) => mix(axes, [["forward", 0.97], ["up", -0.22]]),
       leftLowerLeg: down, rightLowerLeg: down,
-      leftUpperArm: (axes) => mix(axes, [["up", -0.85], ["forward", 0.35], ["right", -0.25]]),
-      rightUpperArm: (axes) => mix(axes, [["up", -0.85], ["forward", 0.35], ["right", 0.25]]),
-      leftLowerArm: (axes) => mix(axes, [["forward", 0.9], ["up", -0.15], ["right", -0.2]]),
-      rightLowerArm: (axes) => mix(axes, [["forward", 0.9], ["up", -0.15], ["right", 0.2]]),
+      leftFoot: (axes) => mix(axes, [["forward", 0.96], ["up", -0.28]]),
+      rightFoot: (axes) => mix(axes, [["forward", 0.96], ["up", -0.28]]),
+      leftUpperArm: (axes) => mix(axes, [["up", -0.78], ["forward", 0.5], ["right", -0.28]]),
+      rightUpperArm: (axes) => mix(axes, [["up", -0.78], ["forward", 0.5], ["right", 0.28]]),
+      leftLowerArm: (axes) => mix(axes, [["forward", 0.9], ["up", -0.25], ["right", -0.2]]),
+      rightLowerArm: (axes) => mix(axes, [["forward", 0.9], ["up", -0.25], ["right", 0.2]]),
     },
     point: {
       rightUpperArm: (axes) => mix(axes, [["forward", 0.82], ["up", 0.2], ["right", 0.4]]),
@@ -2422,14 +2428,15 @@ function presetTargets(name) {
       rightLowerArm: (axes) => mix(axes, [["right", -0.9], ["up", 0.12], ["forward", 0.2]]),
     },
     fight: {
-      spine: (axes) => mix(axes, [["up", 0.9], ["forward", 0.35]]),
-      leftUpperLeg: (axes) => mix(axes, [["up", -0.5], ["forward", 0.82]]),
-      rightUpperLeg: (axes) => mix(axes, [["up", -0.72], ["forward", -0.5]]),
-      leftLowerLeg: down, rightLowerLeg: down,
-      leftUpperArm: (axes) => mix(axes, [["forward", 0.7], ["up", 0.2], ["right", -0.5]]),
-      rightUpperArm: (axes) => mix(axes, [["forward", 0.5], ["up", 0.35], ["right", 0.7]]),
-      leftLowerArm: (axes) => mix(axes, [["up", 0.78], ["forward", 0.5]]),
-      rightLowerArm: (axes) => mix(axes, [["up", 0.82], ["forward", 0.4]]),
+      spine: (axes) => mix(axes, [["up", 0.92], ["forward", 0.28]]),
+      leftUpperLeg: (axes) => mix(axes, [["up", -0.55], ["forward", 0.78]]),
+      rightUpperLeg: (axes) => mix(axes, [["up", -0.88], ["forward", -0.35]]),
+      leftLowerLeg: (axes) => mix(axes, [["up", -0.98], ["forward", 0.12]]),
+      rightLowerLeg: (axes) => mix(axes, [["up", -0.55], ["forward", -0.8]]),
+      leftUpperArm: (axes) => mix(axes, [["forward", 0.55], ["up", 0.35], ["right", -0.55]]),
+      rightUpperArm: (axes) => mix(axes, [["forward", 0.45], ["up", 0.45], ["right", 0.65]]),
+      leftLowerArm: (axes) => mix(axes, [["up", 0.85], ["forward", 0.35], ["right", -0.15]]),
+      rightLowerArm: (axes) => mix(axes, [["up", 0.9], ["forward", 0.25]]),
     },
   };
   return table[name] || null;
@@ -2447,15 +2454,20 @@ function buildPreset(geom, name) {
     const childName = (CHILD_CHAIN[bone] || []).find((item) => geom.humanoid[item] != null);
     const dir = boneDirection(geom, bindWorlds, bone, childName);
     if (!dir) continue;
-    const localDir = rotateVec(invQuat(quatFromMatrix(bindWorlds[node])), dir);
+    const bindRot = quatFromMatrix(bindWorlds[node]);
+    const localDir = rotateVec(invQuat(bindRot), dir);
     const worlds = boneWorlds(geom, pose);
     const parent = geom.rig.parent[node];
     const parentRot = parent != null && parent >= 0 ? quatFromMatrix(worlds[parent]) : [0, 0, 0, 1];
     const worldRot = mulQuat(parentRot, geom.rig.nodes[node].r);
     const worldDir = rotateVec(worldRot, localDir);
-    const delta = quatFromTo(worldDir, targets[bone](axes));
-    pose[bone] = normalizeQuat(mulQuat(invQuat(parentRot), mulQuat(delta, worldRot)));
+    let aimed = mulQuat(quatFromTo(worldDir, targets[bone](axes)), worldRot);
+    const reference = stableAxis(dir, axes);
+    const localSide = rotateVec(invQuat(bindRot), projectPerp(axes[reference], dir));
+    aimed = applyTwist(aimed, localDir, localSide, axes[reference]);
+    pose[bone] = normalizeQuat(mulQuat(invQuat(parentRot), aimed));
   }
+  clampHinges(geom, pose);
   return pose;
 }
 
@@ -2469,7 +2481,111 @@ function modelAxes(geom, worlds) {
   let rightDir = left && right ? subVec(right, left) : [1, 0, 0];
   rightDir = subVec(rightDir, scaleVec(up, dot(rightDir, up)));
   rightDir = Math.hypot(rightDir[0], rightDir[1], rightDir[2]) < 1e-4 ? [1, 0, 0] : norm(rightDir);
-  return { up, right: rightDir, forward: norm(cross(rightDir, up)) };
+  // Character forward is up × right. right × up points out the back, which folded knees backward.
+  return { up, right: rightDir, forward: norm(cross(up, rightDir)) };
+}
+
+// Knees fold toward the back of the thigh. Elbows fold toward the front of the upper arm.
+// Degrees from straight: negative is hyperextension.
+const POSE_HINGES = [
+  { bone: "leftUpperLeg", straight: "down", pole: "forward", min: -65, max: 115 },
+  { bone: "rightUpperLeg", straight: "down", pole: "forward", min: -65, max: 115 },
+  { bone: "leftLowerLeg", parent: "leftUpperLeg", pole: "back", min: 0, max: 150 },
+  { bone: "rightLowerLeg", parent: "rightUpperLeg", pole: "back", min: 0, max: 150 },
+  { bone: "leftLowerArm", parent: "leftUpperArm", pole: "forward", min: 0, max: 150 },
+  { bone: "rightLowerArm", parent: "rightUpperArm", pole: "forward", min: 0, max: 150 },
+];
+
+function clampHinges(geom, pose) {
+  if (!geom || !geom.rig || !geom.humanoid || !pose) return pose;
+  const bindWorlds = boneWorlds(geom, {});
+  const axes = modelAxes(geom, bindWorlds);
+  for (const hinge of POSE_HINGES) {
+    if (geom.humanoid[hinge.bone] == null) continue;
+    if (hinge.parent && geom.humanoid[hinge.parent] == null) continue;
+    const worlds = boneWorlds(geom, pose);
+    const childName = (CHILD_CHAIN[hinge.bone] || []).find((item) => geom.humanoid[item] != null);
+    const childDir = boneDirection(geom, worlds, hinge.bone, childName);
+    if (!childDir) continue;
+    let straight = null;
+    let pole = null;
+    if (hinge.parent) {
+      straight = boneDirection(geom, worlds, hinge.parent, hinge.bone);
+      pole = carriedPole(geom, bindWorlds, worlds, hinge.parent, axes, hinge.pole);
+    } else {
+      straight = hinge.straight === "down" ? scaleVec(axes.up, -1) : axes[hinge.straight];
+      pole = axes[hinge.pole];
+    }
+    if (!straight || !pole) continue;
+    const angle = flexionDegrees(straight, childDir, pole);
+    const limited = Math.max(hinge.min, Math.min(hinge.max, angle));
+    if (Math.abs(limited - angle) < 0.75) continue;
+    const corrected = directionAtFlexion(straight, pole, limited * Math.PI / 180);
+    const node = geom.humanoid[hinge.bone];
+    const bindDir = boneDirection(geom, bindWorlds, hinge.bone, childName);
+    if (!bindDir) continue;
+    const bindRot = quatFromMatrix(bindWorlds[node]);
+    const localDir = rotateVec(invQuat(bindRot), bindDir);
+    const parent = geom.rig.parent[node];
+    const parentRot = parent != null && parent >= 0 ? quatFromMatrix(worlds[parent]) : [0, 0, 0, 1];
+    const worldRot = quatFromMatrix(worlds[node]);
+    const worldDir = rotateVec(worldRot, localDir);
+    const aimed = mulQuat(quatFromTo(worldDir, corrected), worldRot);
+    pose[hinge.bone] = normalizeQuat(mulQuat(invQuat(parentRot), aimed));
+  }
+  return pose;
+}
+
+function carriedPole(geom, bindWorlds, worlds, parentBone, axes, which) {
+  const node = geom.humanoid[parentBone];
+  const basis = which === "back" ? scaleVec(axes.forward, -1) : axes.forward;
+  const local = rotateVec(invQuat(quatFromMatrix(bindWorlds[node])), basis);
+  return rotateVec(quatFromMatrix(worlds[node]), local);
+}
+
+function flexionDegrees(straight, childDir, pole) {
+  const bend = projectPerp(pole, straight);
+  if (Math.hypot(bend[0], bend[1], bend[2]) < 1e-5) return 0;
+  const bendN = norm(bend);
+  const flat = projectPerp(childDir, straight);
+  const cos = Math.max(-1, Math.min(1, dot(norm(straight), norm(childDir))));
+  const angle = Math.acos(cos) * 180 / Math.PI;
+  if (Math.hypot(flat[0], flat[1], flat[2]) < 1e-5) return 0;
+  return dot(norm(flat), bendN) >= 0 ? angle : -angle;
+}
+
+function directionAtFlexion(straight, pole, radians) {
+  const hinge = cross(norm(straight), norm(projectPerp(pole, straight)));
+  if (Math.hypot(hinge[0], hinge[1], hinge[2]) < 1e-5 || Math.abs(radians) < 1e-4) return norm(straight);
+  return norm(rotateVec(quatFromAxis(norm(hinge), radians), norm(straight)));
+}
+
+function stableAxis(dir, axes) {
+  if (Math.hypot.apply(null, projectPerp(axes.right, dir)) > 0.35) return "right";
+  if (Math.hypot.apply(null, projectPerp(axes.up, dir)) > 0.35) return "up";
+  return "forward";
+}
+
+function projectPerp(vector, axis) {
+  const unit = norm(axis);
+  return subVec(vector, scaleVec(unit, dot(vector, unit)));
+}
+
+function applyTwist(worldRot, localDir, localSide, desiredSide) {
+  const boneDir = norm(rotateVec(worldRot, localDir));
+  const sideNow = rotateVec(worldRot, localSide);
+  const sideFlat = projectPerp(sideNow, boneDir);
+  const desired = projectPerp(desiredSide, boneDir);
+  const sideLen = Math.hypot(sideFlat[0], sideFlat[1], sideFlat[2]);
+  const desiredLen = Math.hypot(desired[0], desired[1], desired[2]);
+  if (sideLen < 1e-4 || desiredLen < 1e-4) return worldRot;
+  const sideN = scaleVec(sideFlat, 1 / sideLen);
+  const desiredN = scaleVec(desired, 1 / desiredLen);
+  const cos = Math.max(-1, Math.min(1, dot(sideN, desiredN)));
+  const sin = dot(cross(sideN, desiredN), boneDir);
+  const angle = Math.atan2(sin, cos);
+  if (Math.abs(angle) < 1e-4) return worldRot;
+  return mulQuat(quatFromAxis(boneDir, angle), worldRot);
 }
 
 function boneDirection(geom, worlds, name, childName) {
