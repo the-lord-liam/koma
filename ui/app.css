@@ -1079,11 +1079,18 @@ body[data-studio="1"] .settings { background: #1c1c1e; }
   padding: 16px 18px 20px;
   box-sizing: border-box;
   background: #1c1c1e;
+  flex-direction: row;
+  align-items: stretch;
 }
 .mesh-panel.large .mesh-view {
   flex: 1;
   height: auto;
-  min-height: 240px;
+  min-height: 0;
+}
+.mesh-panel.large .mesh-side {
+  width: 340px;
+  overflow: auto;
+  flex: none;
 }
 .hero-name {
   color: #1c1c1e;
