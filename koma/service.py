@@ -22,7 +22,7 @@ from koma.config import load_config, public_settings, save_config
 from koma.formats import FormatError, catalog as format_catalog, project_pixels, resolve_format
 from koma.layouts import LAYOUTS, LayoutError, assist_divide, place, reflow_after_delete, to_stored_line
 from koma.media import media_url, save_image, unlink
-from koma.mesh import NOT_INSTALLED, MeshError, command_available, generate_mesh, glb_from_obj, obj_from_glb, parse_glb
+from koma.mesh import NOT_INSTALLED, MeshError, command_available, generate_mesh, load_model_file, obj_from_glb, parse_glb
 from koma.paths import data_dir, export_root, exports_dir, meshes_dir, previews_dir, safe_slug
 from koma.prompts import (
     ANCHORS,
@@ -1683,7 +1683,7 @@ class Studio:
         character = self.store.get_character(params["id"])
         source = Path(str(params.get("path") or "")).expanduser()
         if not source.is_file():
-            raise ValueError("Choose a GLB or OBJ file.")
+            raise ValueError("Choose a GLB, VRM, or OBJ file.")
         resolved = source.resolve()
         roots = [Path.home().resolve(), Path(tempfile.gettempdir()).resolve(), data_dir().resolve()]
         if not any(resolved == root or root in resolved.parents for root in roots):
@@ -1692,17 +1692,10 @@ class Studio:
             raise ValueError("That model is larger than 80 MB.")
         if resolved.stat().st_size == 0:
             raise ValueError("That model file is empty.")
-        raw = resolved.read_bytes()
-        suffix = resolved.suffix.lower()
-        if suffix == ".glb" or raw.startswith(b"glTF"):
-            glb = raw
-        elif suffix == ".obj":
-            try:
-                glb = glb_from_obj(raw.decode("utf-8", "replace"))
-            except MeshError as error:
-                raise ValueError(str(error)) from None
-        else:
-            raise ValueError("Import a .glb or .obj file.")
+        try:
+            glb = load_model_file(resolved)
+        except MeshError as error:
+            raise ValueError(str(error)) from None
         if not isinstance(glb, bytes) or not glb.startswith(b"glTF"):
             raise ValueError("That file is not a GLB Koma can read.")
         try:
@@ -1749,9 +1742,16 @@ class Studio:
         if not path.is_file():
             raise ValueError("That model file is missing. Generate it again.")
         data = path.read_bytes()
-        if len(data) > 48_000_000:
+        total = len(data)
+        if total > 80_000_000:
             raise ValueError("That model is too large to preview here. Export it instead.")
-        return {"glb": base64.b64encode(data).decode("ascii")}
+        offset = int(params.get("offset") or 0)
+        if offset < 0 or offset > total:
+            raise ValueError("That model could not be read.")
+        if "offset" not in params and total <= 12_000_000:
+            return {"glb": base64.b64encode(data).decode("ascii"), "offset": 0, "total": total}
+        piece = data[offset : offset + 1_500_000]
+        return {"glb": base64.b64encode(piece).decode("ascii"), "offset": offset, "total": total}
 
     def _mesh_prompt(self, character: dict, typed: str) -> str:
         typed = typed.strip()

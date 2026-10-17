@@ -1031,8 +1031,8 @@ function characterFields(person) {
       <button type="button" class="chip ${state.meshSource === "refs" ? "on" : ""}" data-act="mesh-source" data-value="refs">From references</button>
     </div>
     <button type="button" class="rail-go" data-act="gen-mesh" data-id="${esc(person.id)}" ${state.busy ? "disabled" : ""}>Generate 3D model</button>
-    <button type="button" class="ghost" data-act="import-mesh" data-id="${esc(person.id)}" ${state.busy ? "disabled" : ""}>Import GLB or OBJ</button>
-    <p class="meta">Local TripoSR is the default. It lifts a picture on your machine. A prompt with no portrait draws a reference first. Meshy and Tripo need a key in Settings. Import reads a model already on your machine.</p>
+    <button type="button" class="ghost" data-act="import-mesh" data-id="${esc(person.id)}" ${state.busy ? "disabled" : ""}>Import GLB, VRM, or OBJ</button>
+    <p class="meta">Local TripoSR is the default. It lifts a picture on your machine. A prompt with no portrait draws a reference first. Meshy and Tripo need a key in Settings. Import reads a GLB, VRM, or OBJ already on your machine.</p>
   `;
 }
 
@@ -1076,7 +1076,7 @@ function characterMesh(person) {
         <span class="meta">${esc(meta)}</span>
       </div>
       <div class="mesh-view ${current ? "" : "empty"}">
-        ${current ? `<canvas data-mesh-id="${esc(current.id)}" width="640" height="360" aria-label="3D model of ${esc(person.name)}"></canvas>` : `<p class="mesh-empty">Generate a model, or import a GLB or OBJ file.</p>`}
+        ${current ? `<canvas data-mesh-id="${esc(current.id)}" data-mesh-url="${esc(current.url)}" width="640" height="360" aria-label="3D model of ${esc(person.name)}"></canvas>` : `<p class="mesh-empty">Generate a model, or import a GLB, VRM, or OBJ file.</p>`}
         <p class="mesh-note"></p>
       </div>
       ${current ? `<p class="meta">Drag to orbit any way. Shift-drag pans. Alt-drag rolls. Scroll zooms.</p>
@@ -2624,6 +2624,8 @@ const actions = {
       if (!picked || !picked.path) return;
       await run("Importing the model…", async () => {
         absorb(await rpc("character.mesh_import", { id: button.dataset.id, path: picked.path }));
+        const person = (state.tree.characters || []).find((item) => item.id === button.dataset.id);
+        if (person && person.meshes && person.meshes[0]) state.meshId = person.meshes[0].id;
       });
     })();
   },
@@ -2664,6 +2666,8 @@ const actions = {
         prompt,
         source: state.meshSource || "prompt",
       }));
+      const person = (state.tree.characters || []).find((item) => item.id === button.dataset.id);
+      if (person && person.meshes && person.meshes[0]) state.meshId = person.meshes[0].id;
     });
   },
   "select-mesh"(button) {
