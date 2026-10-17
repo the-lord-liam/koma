@@ -1948,6 +1948,16 @@ for (const rightX of [0.2, -0.2]) {
   const ankle = pos(geom, worlds, "leftFoot");
   const thigh = nrm(sub(knee, hip));
   const shin = nrm(sub(ankle, knee));
+  const sitWorlds = worlds;
+  const fightWorlds = boneWorlds(geom, buildPreset(geom, "fight"));
+  function limb(posed, a, b) { return nrm(sub(pos(geom, posed, b), pos(geom, posed, a))); }
+  const sitUpper = limb(sitWorlds, "leftUpperArm", "leftLowerArm");
+  const sitLower = limb(sitWorlds, "leftLowerArm", "leftHand");
+  const fightUpper = limb(fightWorlds, "leftUpperArm", "leftLowerArm");
+  const fightLower = limb(fightWorlds, "leftLowerArm", "leftHand");
+  const fightLeftThigh = limb(fightWorlds, "leftUpperLeg", "leftLowerLeg");
+  const fightRightThigh = limb(fightWorlds, "rightUpperLeg", "rightLowerLeg");
+  const elbowFlex = Math.acos(Math.max(-1, Math.min(1, dot(fightUpper, fightLower)))) * 180 / Math.PI;
   const hinges = {};
   for (const name of ["relaxed", "walk", "run", "sit", "point", "cross", "fight"]) {
     const posed = boneWorlds(geom, buildPreset(geom, name));
@@ -1971,6 +1981,14 @@ for (const rightX of [0.2, -0.2]) {
     thighForward: dot(thigh, axes.forward),
     shinUp: dot(shin, axes.up),
     kneeFlex: flexOf(geom, worlds, bindWorlds, axes, POSE_HINGES[2]),
+    sitUpperUp: dot(sitUpper, axes.up),
+    sitLowerUp: dot(sitLower, axes.up),
+    sitLowerForward: dot(sitLower, axes.forward),
+    fightUpperUp: dot(fightUpper, axes.up),
+    fightLowerUp: dot(fightLower, axes.up),
+    fightElbow: elbowFlex,
+    fightLead: dot(fightLeftThigh, axes.forward),
+    fightBack: dot(fightRightThigh, axes.forward),
     hyperBefore: dot(before, axes.forward),
     hyperAfter: dot(after, axes.forward),
     legalFlex,
@@ -1989,6 +2007,14 @@ process.stdout.write(JSON.stringify(report));
             self.assertGreater(item["thighForward"], 0.7)
             self.assertLess(item["shinUp"], -0.7)
             self.assertGreater(item["kneeFlex"], 40)
+            self.assertLess(item["sitUpperUp"], -0.7)
+            self.assertLess(item["sitLowerUp"], -0.5)
+            self.assertGreater(item["sitLowerForward"], 0.3)
+            self.assertLess(item["fightUpperUp"], 0.15)
+            self.assertGreater(item["fightLowerUp"], 0.4)
+            self.assertGreater(item["fightElbow"], 70)
+            self.assertGreater(item["fightLead"], 0.5)
+            self.assertLess(item["fightBack"], 0)
             self.assertGreater(item["hyperBefore"], 0.7)
             self.assertLess(item["hyperAfter"], 0.15)
             self.assertGreater(item["legalFlex"], 30)
