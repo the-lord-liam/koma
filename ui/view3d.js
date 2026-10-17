@@ -556,14 +556,23 @@ const meshCamera = window.meshCamera = {
 };
 let meshSpin = 0;
 
-function resetMeshCamera() {
-  meshCamera.yaw = 0.7;
-  meshCamera.pitch = 0.42;
+function facingYaw(geom) {
+  if (!geom || !geom.rig || !geom.humanoid || !geom.humanoid.hips) return 0;
+  const worlds = geom._bindWorlds || boneWorlds(geom, {});
+  const forward = modelAxes(geom, worlds).forward;
+  const yaw = Math.atan2(-forward[0], forward[2]);
+  return Number.isFinite(yaw) ? yaw : 0;
+}
+
+function resetMeshCamera(geom) {
+  const front = facingYaw(geom);
+  meshCamera.yaw = front - 0.62;
+  meshCamera.pitch = 0.16;
   meshCamera.roll = 0;
   meshCamera.dist = meshCamera.baseDist || 3.2;
   meshCamera.panX = 0;
   meshCamera.panY = 0;
-  meshCamera.angle = "";
+  meshCamera.angle = geom && geom.humanoid ? "three" : "";
 }
 
 function meshFlags() {
@@ -620,7 +629,7 @@ function showMesh(canvas, geom) {
   if (meshCamera.meshId !== id) {
     meshCamera.meshId = id;
     meshCamera.baseDist = useGl ? Math.max(1.2, span / Math.tan(0.35) / 0.72) : Math.max(1.2, span * 2.15);
-    resetMeshCamera();
+    resetMeshCamera(geom);
   }
   canvas._geom = geom;
   canvas._orbit = meshCamera;

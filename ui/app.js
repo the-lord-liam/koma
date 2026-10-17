@@ -2898,15 +2898,17 @@ const actions = {
     meshCamera.panX = 0;
     meshCamera.panY = 0;
     meshCamera.roll = 0;
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    const front = window.facingYaw ? facingYaw(canvas && canvas._geom) : 0;
     if (angle === "front") {
-      meshCamera.yaw = 0;
+      meshCamera.yaw = front;
       meshCamera.pitch = 0.05;
     } else if (angle === "side") {
-      meshCamera.yaw = Math.PI / 2;
+      meshCamera.yaw = front - Math.PI / 2;
       meshCamera.pitch = 0.05;
     } else if (angle === "three") {
-      meshCamera.yaw = 0.62;
-      meshCamera.pitch = 0.28;
+      meshCamera.yaw = front - 0.62;
+      meshCamera.pitch = 0.16;
     }
     render();
   },
