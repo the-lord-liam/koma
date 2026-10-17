@@ -22,7 +22,8 @@ from koma.config import load_config, public_settings, save_config
 from koma.formats import FormatError, catalog as format_catalog, project_pixels, resolve_format
 from koma.layouts import LAYOUTS, LayoutError, assist_divide, place, reflow_after_delete, to_stored_line
 from koma.media import media_url, save_image, unlink
-from koma.paths import data_dir, export_root, exports_dir, previews_dir, safe_slug
+from koma.mesh import NOT_INSTALLED, MeshError, command_available, generate_mesh, obj_from_glb
+from koma.paths import data_dir, export_root, exports_dir, meshes_dir, previews_dir, safe_slug
 from koma.prompts import (
     ANCHORS,
     ANGLES,
@@ -43,7 +44,7 @@ from koma.prompts import (
     plan_request,
     project_brief,
 )
-from koma.store import Store
+from koma.store import Store, new_id as new_mesh_id
 
 BALLOON_IDS = [item["id"] for item in BALLOONS]
 ANCHOR_IDS = [item["id"] for item in ANCHORS]
@@ -94,10 +95,17 @@ def summarize_plan(plan: dict) -> dict:
 
 
 class Studio:
-    def __init__(self, store: Store, client: Client | None = None, status: Callable[[str], None] | None = None):
+    def __init__(
+        self,
+        store: Store,
+        client: Client | None = None,
+        status: Callable[[str], None] | None = None,
+        mesh_backend: Callable | None = None,
+    ):
         self.store = store
         self.client = client or Client(lambda: load_config()["api_key"])
         self.status = status or (lambda _text: None)
+        self.mesh_backend = mesh_backend
         self._undo: dict[str, list[dict]] = {}
         self._redo: dict[str, list[dict]] = {}
         self._history_ready: set[str] = set()
@@ -202,7 +210,24 @@ class Studio:
             "wardrobe": row["wardrobe"],
             "primaryRefId": row.get("primary_ref_id"),
             "refs": self._refs_out("character", row["id"], row.get("primary_ref_id")),
+            "meshes": self._meshes_out(row["id"]),
         }
+
+    def _meshes_out(self, character_id: str) -> list[dict]:
+        items = []
+        for mesh in self.store.list_meshes(character_id):
+            name = Path(mesh["glb_path"]).name
+            items.append(
+                {
+                    "id": mesh["id"],
+                    "prompt": mesh["prompt"],
+                    "provider": mesh["provider"],
+                    "source": mesh["source"],
+                    "url": f"koma:///mesh/{name}",
+                    "createdAt": mesh["created_at"],
+                }
+            )
+        return items
 
     def _location_out(self, row: dict) -> dict:
         return {
@@ -710,6 +735,19 @@ class Studio:
             updates["quality"] = params["quality"]
         if "resolution" in params:
             updates["resolution"] = params["resolution"]
+        provider = params.get("meshProvider", params.get("mesh_provider"))
+        if provider in {"local", "meshy", "tripo"}:
+            updates["mesh_provider"] = provider
+        if "meshCommand" in params or "mesh_command" in params:
+            updates["mesh_command"] = params.get("meshCommand", params.get("mesh_command"))
+        if params.get("clearMeshyKey"):
+            updates["meshy_key"] = ""
+        elif isinstance(params.get("meshyKey"), str) and params["meshyKey"].strip():
+            updates["meshy_key"] = params["meshyKey"].strip()
+        if params.get("clearTripoKey"):
+            updates["tripo_key"] = ""
+        elif isinstance(params.get("tripoKey"), str) and params["tripoKey"].strip():
+            updates["tripo_key"] = params["tripoKey"].strip()
         return {"settings": public_settings(save_config(updates))}
 
     def project_create(self, params: dict) -> dict:
@@ -1615,6 +1653,117 @@ class Studio:
         self.store.update_character(character["id"], {"primary_ref_id": ref["id"]}, {"primary_ref_id"})
         self.store.touch(character["project_id"])
         return self._pack(character["project_id"])
+
+    def character_mesh(self, params: dict) -> dict:
+        character = self.store.get_character(params["id"])
+        project = self.store.get_project(character["project_id"])
+        source = params.get("source") or "prompt"
+        if source not in {"prompt", "refs"}:
+            raise ValueError("Choose a prompt or reference images.")
+        prompt = self._mesh_prompt(character, _clip(params.get("prompt"), 2000))
+        settings = load_config()
+        provider = settings.get("mesh_provider") or "local"
+        if provider == "local" and self.mesh_backend is None and not command_available(settings):
+            raise MeshError(NOT_INSTALLED)
+        images = self._mesh_images(character, source, provider, project, prompt)
+        self.status(f"Building a 3D model of {character['name']}…")
+        if self.mesh_backend is not None:
+            glb = self.mesh_backend(provider, prompt, images, self.status, settings)
+        else:
+            glb = generate_mesh(provider, prompt, images, self.status, settings)
+        if not isinstance(glb, bytes) or not glb.startswith(b"glTF"):
+            raise MeshError("The 3D backend did not return a GLB file.")
+        path = meshes_dir() / f"{new_mesh_id()}.glb"
+        path.write_bytes(glb)
+        self.store.create_mesh(character["id"], prompt, provider, source, str(path))
+        self.store.touch(project["id"])
+        return self._pack(project["id"])
+
+    def character_mesh_delete(self, params: dict) -> dict:
+        mesh = self.store.get_mesh(params["id"])
+        character = self.store.get_character(mesh["character_id"])
+        self.store.delete_mesh(mesh["id"])
+        self.store.touch(character["project_id"])
+        return self._pack(character["project_id"])
+
+    def character_mesh_export(self, params: dict) -> dict:
+        mesh = self.store.get_mesh(params["id"])
+        character = self.store.get_character(mesh["character_id"])
+        project = self.store.get_project(character["project_id"])
+        fmt = params.get("format") or "glb"
+        if fmt not in {"glb", "obj"}:
+            raise ValueError("Export GLB or OBJ.")
+        source = Path(mesh["glb_path"])
+        if not source.is_file():
+            raise ValueError("That model file is missing. Generate it again.")
+        data = source.read_bytes()
+        folder = exports_dir(project["title"])
+        stem = f"{safe_slug(character['name'])}-model"
+        if fmt == "glb":
+            dest = folder / f"{stem}.glb"
+            dest.write_bytes(data)
+        else:
+            dest = folder / f"{stem}.obj"
+            dest.write_bytes(obj_from_glb(data))
+        return {"path": str(dest)}
+
+    def character_mesh_bytes(self, params: dict) -> dict:
+        mesh = self.store.get_mesh(params["id"])
+        path = Path(mesh["glb_path"])
+        if not path.is_file():
+            raise ValueError("That model file is missing. Generate it again.")
+        data = path.read_bytes()
+        if len(data) > 48_000_000:
+            raise ValueError("That model is too large to preview here. Export it instead.")
+        return {"glb": base64.b64encode(data).decode("ascii")}
+
+    def _mesh_prompt(self, character: dict, typed: str) -> str:
+        typed = typed.strip()
+        if typed:
+            return typed
+        parts = [character["name"]]
+        if character.get("appearance"):
+            parts.append(character["appearance"])
+        if character.get("wardrobe"):
+            parts.append(character["wardrobe"])
+        return ". ".join(part for part in parts if part)
+
+    def _mesh_images(self, character: dict, source: str, provider: str, project: dict, prompt: str) -> list[str]:
+        if source == "refs":
+            images = self._ordered_mesh_refs(character)
+            if not images:
+                raise ValueError("Draw or import a portrait before generating a model from references.")
+            return images[:1]
+        if provider != "local":
+            return []
+        identity = self._identity_path("character", character)
+        if identity:
+            return [identity]
+        self.status(f"Drawing a reference of {character['name']}…")
+        draw = (
+            f"Full-body character reference of {character['name']}, front view, plain background. "
+            f"{character.get('appearance') or ''} {character.get('wardrobe') or ''} {prompt}. "
+            f"Style: {project.get('art_style') or DEFAULT_STYLE}. "
+            "No written text, letters, speech balloons, captions, or sound effects."
+        )
+        path = self._imagine(draw, "2:3", [])
+        ref = self.store.create_ref("character", character["id"], "portrait", "3D reference", path, draw)
+        if not character.get("primary_ref_id"):
+            self.store.update_character(character["id"], {"primary_ref_id": ref["id"]}, {"primary_ref_id"})
+        return [path]
+
+    def _ordered_mesh_refs(self, character: dict) -> list[str]:
+        refs = self.store.list_refs("character", character["id"])
+        primary = character.get("primary_ref_id")
+        ordered = [ref for ref in refs if ref["id"] == primary]
+        ordered.extend(ref for ref in refs if ref["id"] != primary and ref["kind"] in {"portrait", "turnaround"})
+        ordered.extend(ref for ref in refs if ref not in ordered)
+        images = []
+        for ref in ordered:
+            path = ref.get("image_path")
+            if path and path not in images:
+                images.append(path)
+        return images
 
     def character_delete_ref(self, params: dict) -> dict:
         ref = self.store.get_ref(params["refId"])
@@ -2682,6 +2831,10 @@ ROUTES = {
     "character.revise": Studio.character_revise,
     "character.primary": Studio.character_primary,
     "character.delete_ref": Studio.character_delete_ref,
+    "character.mesh": Studio.character_mesh,
+    "character.mesh_delete": Studio.character_mesh_delete,
+    "character.mesh_export": Studio.character_mesh_export,
+    "character.mesh_bytes": Studio.character_mesh_bytes,
     "location.create": Studio.location_create,
     "location.update": Studio.location_update,
     "location.delete": Studio.location_delete,

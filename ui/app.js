@@ -59,6 +59,9 @@ const state = {
   busy: false,
   status: "",
   helpOpen: false,
+  meshSource: "prompt",
+  meshPrompt: "",
+  meshId: null,
 };
 
 const pending = new Map();
@@ -243,6 +246,7 @@ function render() {
   requestAnimationFrame(() => {
     paintDivide();
     restoreSketch();
+    if (window.mountMeshViewers) mountMeshViewers();
   });
   if (state.view === "pages" && state.panelId && state.pageTool === "lasso") refreshPreview();
 }
@@ -847,7 +851,38 @@ function renderSettings() {
           ${[["low", "Low"], ["medium", "Medium"], ["auto", "Auto"]].map(([id, label]) => `<option value="${id}" ${id === settings.quality ? "selected" : ""}>${label}</option>`).join("")}
         </select>
       </label>
-      <p class="meta">Projects live in ${esc(state.dataDir)}. Exports go to Documents/Koma.</p>
+      <h2>3D models</h2>
+      <p class="lede">The default builds a mesh on your machine with TripoSR. It needs a separate install and does not use a paid account. Meshy and Tripo are optional. Choosing one sends the prompt, and a reference image when you use one, to that service.</p>
+      <label class="field">3D provider
+        <select data-save="settings" data-field="meshProvider" data-entity="">
+          ${[
+            ["local", "Local (TripoSR)"],
+            ["meshy", "Meshy"],
+            ["tripo", "Tripo"],
+          ].map(([id, label]) => `<option value="${id}" ${id === (settings.meshProvider || "local") ? "selected" : ""}>${label}</option>`).join("")}
+        </select>
+      </label>
+      <p class="meta">${settings.localReady ? "A local 3D command is ready." : "No local backend found yet. Install TripoSR or set a command. Weights are not included with Koma."}</p>
+      <label class="field">Local 3D command
+        <input type="text" data-save="settings" data-field="meshCommand" data-entity="" value="${esc(settings.meshCommand || "")}" placeholder="Leave empty to use TripoSR if it is installed">
+      </label>
+      <p class="meta">${settings.hasMeshyKey ? `A Meshy key is saved (${esc(settings.meshyHint)}).` : "No Meshy key saved."}</p>
+      <label class="field">Meshy API key
+        <input id="meshy-key" type="password" placeholder="Paste a Meshy key" autocomplete="off">
+      </label>
+      <div class="row">
+        <button type="button" class="primary" data-act="save-meshy">Save Meshy key</button>
+        <button type="button" class="danger" data-act="clear-meshy">Remove Meshy key</button>
+      </div>
+      <p class="meta">${settings.hasTripoKey ? `A Tripo key is saved (${esc(settings.tripoHint)}).` : "No Tripo key saved."}</p>
+      <label class="field">Tripo API key
+        <input id="tripo-key" type="password" placeholder="Paste a Tripo key" autocomplete="off">
+      </label>
+      <div class="row">
+        <button type="button" class="primary" data-act="save-tripo">Save Tripo key</button>
+        <button type="button" class="danger" data-act="clear-tripo">Remove Tripo key</button>
+      </div>
+      <p class="meta">Projects live in ${esc(state.dataDir)}. Exports go to Documents/Koma. 3D models live in the meshes folder beside the images.</p>
       <button type="button" class="ghost" data-act="go-home">Back to canvases</button>
     </div></div>
   `;
@@ -986,6 +1021,16 @@ function characterFields(person) {
     </div>
     <textarea id="ref-note" placeholder="Revise the selected reference. Shorten the hair. Keep the face."></textarea>
     <button type="button" class="ghost" data-act="revise-ref" ${state.busy ? "disabled" : ""}>Revise reference</button>
+    <p class="rail-kicker">3D model</p>
+    <label class="field">Prompt
+      <textarea id="mesh-prompt" data-save="local" data-field="meshPrompt" data-entity="" placeholder="A full-body figure in the same clothes">${esc(state.meshPrompt || "")}</textarea>
+    </label>
+    <div class="row">
+      <button type="button" class="chip ${state.meshSource === "refs" ? "" : "on"}" data-act="mesh-source" data-value="prompt">From prompt</button>
+      <button type="button" class="chip ${state.meshSource === "refs" ? "on" : ""}" data-act="mesh-source" data-value="refs">From references</button>
+    </div>
+    <button type="button" class="rail-go" data-act="gen-mesh" data-id="${esc(person.id)}" ${state.busy ? "disabled" : ""}>Generate 3D model</button>
+    <p class="meta">Local TripoSR is the default. It lifts a picture on your machine. A prompt with no portrait draws a reference first. Meshy and Tripo need a key in Settings.</p>
   `;
 }
 
@@ -996,13 +1041,48 @@ function characterStage(person) {
       <img src="${esc(ref.url)}" alt="">
     </button>
   `).join("");
+  const compact = (person.meshes || []).length ? " compact" : "";
   return `
     <div class="stage">
-      <div class="hero-art">
+      ${characterMesh(person)}
+      <div class="hero-art${compact}">
         ${chosen ? `<img src="${esc(chosen.url)}" alt="">` : `<span class="hero-name">${esc(person.name)}</span>`}
       </div>
       <div class="illust-strip hero-thumbs">${thumbs}</div>
     </div>
+  `;
+}
+
+function characterMesh(person) {
+  const meshes = person.meshes || [];
+  if (state.meshId && !meshes.some((mesh) => mesh.id === state.meshId)) state.meshId = null;
+  const current = meshes.find((mesh) => mesh.id === state.meshId) || meshes[0] || null;
+  if (current) state.meshId = current.id;
+  const names = { local: "Local", meshy: "Meshy", tripo: "Tripo" };
+  const meta = current
+    ? `${names[current.provider] || current.provider} · ${current.source === "refs" ? "from references" : "from prompt"}`
+    : "No 3D model yet.";
+  const older = meshes.filter((mesh) => !current || mesh.id !== current.id).map((mesh) => `
+    <button type="button" class="chip" data-act="select-mesh" data-id="${esc(mesh.id)}">${esc(names[mesh.provider] || mesh.provider)}</button>
+  `).join("");
+  return `
+    <section class="mesh-panel">
+      <div class="row">
+        <p class="rail-kicker">3D model</p>
+        <span class="meta">${esc(meta)}</span>
+      </div>
+      <div class="mesh-view ${current ? "" : "empty"}">
+        ${current ? `<canvas data-mesh-id="${esc(current.id)}" width="640" height="360" aria-label="3D model of ${esc(person.name)}"></canvas>` : `<p class="mesh-empty">Generate a model from a prompt, or from this character's portrait.</p>`}
+        <p class="mesh-note"></p>
+      </div>
+      ${current ? `<p class="meta">Drag to turn it. Scroll to zoom.</p>
+        <div class="row">
+          <button type="button" class="ghost" data-act="export-mesh" data-id="${esc(current.id)}" data-format="glb" ${state.busy ? "disabled" : ""}>Export GLB</button>
+          <button type="button" class="ghost" data-act="export-mesh" data-id="${esc(current.id)}" data-format="obj" ${state.busy ? "disabled" : ""}>Export OBJ</button>
+          <button type="button" class="danger" data-act="delete-mesh" data-id="${esc(current.id)}" ${state.busy ? "disabled" : ""}>Delete model</button>
+        </div>
+        ${older ? `<div class="row">${older}</div>` : ""}` : ""}
+    </section>
   `;
 }
 
@@ -2141,6 +2221,38 @@ const actions = {
       absorb(await rpc("settings.save", { clearKey: true }));
     });
   },
+  "save-meshy"() {
+    const meshyKey = document.getElementById("meshy-key").value.trim();
+    if (!meshyKey) {
+      toast("Paste a Meshy key first.");
+      return;
+    }
+    return run("Saving the Meshy key…", async () => {
+      absorb(await rpc("settings.save", { meshyKey }));
+      toast("Meshy key saved on this machine.", "ok");
+    });
+  },
+  "clear-meshy"() {
+    return run("Removing the Meshy key…", async () => {
+      absorb(await rpc("settings.save", { clearMeshyKey: true }));
+    });
+  },
+  "save-tripo"() {
+    const tripoKey = document.getElementById("tripo-key").value.trim();
+    if (!tripoKey) {
+      toast("Paste a Tripo key first.");
+      return;
+    }
+    return run("Saving the Tripo key…", async () => {
+      absorb(await rpc("settings.save", { tripoKey }));
+      toast("Tripo key saved on this machine.", "ok");
+    });
+  },
+  "clear-tripo"() {
+    return run("Removing the Tripo key…", async () => {
+      absorb(await rpc("settings.save", { clearTripoKey: true }));
+    });
+  },
   plan() {
     const project = state.tree.project;
     return run("Planning the story…", async () => {
@@ -2489,6 +2601,40 @@ const actions = {
     return run("Deleting…", async () => {
       absorb(await rpc("character.delete", { id: button.dataset.id }));
       state.charId = null;
+    });
+  },
+  "mesh-source"(button) {
+    state.meshSource = button.dataset.value === "refs" ? "refs" : "prompt";
+    render();
+  },
+  "gen-mesh"(button) {
+    const field = document.getElementById("mesh-prompt");
+    const prompt = field ? field.value : (state.meshPrompt || "");
+    state.meshPrompt = prompt;
+    return run("Building the 3D model…", async () => {
+      absorb(await rpc("character.mesh", {
+        id: button.dataset.id,
+        prompt,
+        source: state.meshSource || "prompt",
+      }));
+    });
+  },
+  "select-mesh"(button) {
+    state.meshId = button.dataset.id;
+    render();
+  },
+  "export-mesh"(button) {
+    const format = button.dataset.format === "obj" ? "obj" : "glb";
+    return run("Exporting the model…", async () => {
+      const result = await rpc("character.mesh_export", { id: button.dataset.id, format });
+      toast("Saved " + result.path, "ok");
+    });
+  },
+  "delete-mesh"(button) {
+    if (!confirm("Delete this 3D model?")) return;
+    return run("Deleting the model…", async () => {
+      absorb(await rpc("character.mesh_delete", { id: button.dataset.id }));
+      state.meshId = null;
     });
   },
   "gen-character"(button) {
@@ -3451,6 +3597,10 @@ document.addEventListener("input", (event) => {
   const el = event.target;
   if (el && el.id === "bot-draft") state.botDraft = el.value;
   if (!el.dataset || el.dataset.save !== "local") return;
+  if (el.dataset.field === "meshPrompt") {
+    state.meshPrompt = el.value;
+    return;
+  }
   if (!String(el.dataset.field || "").startsWith("setup")) return;
   state[el.dataset.field] = el.value;
   paintSetupSpec();

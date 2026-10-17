@@ -47,6 +47,12 @@ def previews_dir() -> Path:
     return path
 
 
+def meshes_dir() -> Path:
+    path = data_dir() / "meshes"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 def safe_slug(text: str) -> str:
     """Folder-safe name. Keeps letters from any language so two books do not share one export folder."""
     cleaned = text.strip().replace("/", " ").replace("\\", " ")

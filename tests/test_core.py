@@ -1024,6 +1024,230 @@ class CoreTests(unittest.TestCase):
         self.studio.page_delete({"id": classic_id})
         self.assertFalse(history.exists())
 
+    def test_mesh_storage_export_and_delete(self):
+        from koma.mesh import cube_glb, obj_from_glb, parse_glb
+
+        def backend(provider, prompt, images, status, settings):
+            self.assertEqual(provider, "local")
+            self.assertIn("runner", prompt)
+            status("Building the 3D model…")
+            return cube_glb()
+
+        self.studio.mesh_backend = backend
+        created = self.studio.project_create({"title": "Figures", "premise": "A cast with models."})
+        project_id = created["tree"]["project"]["id"]
+        made = self.studio.character_create({"projectId": project_id, "name": "Aki"})
+        character_id = made["tree"]["characters"][-1]["id"]
+        with self.assertRaises(ValueError) as missing:
+            self.studio.character_mesh({"id": character_id, "source": "refs", "prompt": "from the sheet"})
+        self.assertIn("portrait", str(missing.exception).lower())
+
+        built = self.studio.character_mesh({"id": character_id, "source": "prompt", "prompt": "a runner in a red jacket"})
+        person = built["tree"]["characters"][-1]
+        self.assertEqual(len(person["meshes"]), 1)
+        mesh = person["meshes"][0]
+        self.assertEqual(mesh["provider"], "local")
+        self.assertEqual(mesh["source"], "prompt")
+        self.assertTrue(mesh["url"].startswith("koma:///mesh/"))
+        self.assertTrue(mesh["url"].endswith(".glb"))
+        row = self.store.get_mesh(mesh["id"])
+        self.assertTrue(Path(row["glb_path"]).is_file())
+        positions, indices = parse_glb(Path(row["glb_path"]).read_bytes())
+        self.assertGreaterEqual(len(positions), 8)
+        self.assertGreaterEqual(len(indices), 36)
+        obj = obj_from_glb(Path(row["glb_path"]).read_bytes())
+        self.assertIn(b"\nv ", b"\n" + obj)
+        self.assertIn(b"\nf ", b"\n" + obj)
+
+        exported = self.studio.character_mesh_export({"id": mesh["id"], "format": "glb"})
+        obj_export = self.studio.character_mesh_export({"id": mesh["id"], "format": "obj"})
+        self.assertTrue(exported["path"].endswith("Aki-model.glb"))
+        self.assertTrue(Path(exported["path"]).is_file())
+        self.assertTrue(Path(obj_export["path"]).read_bytes().startswith(b"# Koma"))
+        preview = self.studio.character_mesh_bytes({"id": mesh["id"]})
+        self.assertTrue(preview["glb"])
+        with self.assertRaises(ValueError):
+            self.studio.character_mesh_export({"id": mesh["id"], "format": "stl"})
+
+        self.studio.mesh_backend = lambda *_args: b"not-a-glb"
+        with self.assertRaises(ValueError) as bad:
+            self.studio.character_mesh({"id": character_id, "source": "prompt", "prompt": "again"})
+        self.assertIn("GLB", str(bad.exception))
+
+        glb_path = row["glb_path"]
+        self.studio.character_delete({"id": character_id})
+        self.assertFalse(Path(glb_path).exists())
+        self.assertEqual(self.store.list_meshes(character_id), [])
+
+        again = self.studio.character_create({"projectId": project_id, "name": "Ren"})
+        self.studio.mesh_backend = backend
+        ren_id = again["tree"]["characters"][-1]["id"]
+        held = self.studio.character_mesh({"id": ren_id, "source": "prompt", "prompt": "a runner"})
+        held_path = self.store.get_mesh(held["tree"]["characters"][-1]["meshes"][0]["id"])["glb_path"]
+        self.studio.project_delete({"id": project_id})
+        self.assertFalse(Path(held_path).exists())
+        self.assertEqual(self.store._all("SELECT id FROM meshes", ()), [])
+        self.assertEqual(self.store._all("SELECT id FROM characters", ()), [])
+
+    def test_mesh_provider_selection_and_errors(self):
+        from koma.mesh import NOT_INSTALLED, MeshError, cube_glb, generate_mesh, glb_from_obj, obj_from_glb
+
+        created = self.studio.project_create({"title": "Providers", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        made = self.studio.character_create({"projectId": project_id, "name": "Aki"})
+        character_id = made["tree"]["characters"][-1]["id"]
+        settings = self.studio.bootstrap({})["settings"]
+        self.assertEqual(settings["meshProvider"], "local")
+        self.assertFalse(settings["localReady"])
+        self.assertFalse(settings["hasMeshyKey"])
+        self.assertFalse(settings["hasTripoKey"])
+
+        with self.assertRaises(MeshError) as missing_local:
+            self.studio.character_mesh({"id": character_id, "source": "prompt", "prompt": "a runner"})
+        self.assertIn("not installed", str(missing_local.exception))
+        self.assertIn("TripoSR", str(missing_local.exception))
+        self.assertEqual(NOT_INSTALLED[:20], str(missing_local.exception)[:20])
+
+        saved = self.studio.settings_save({"meshyKey": "meshy-secret-key-99"})
+        self.assertTrue(saved["settings"]["hasMeshyKey"])
+        self.assertEqual(saved["settings"]["meshyHint"], "…y-99")
+        self.assertNotIn("meshy-secret-key-99", json.dumps(saved["settings"]))
+        self.studio.settings_save({"clearMeshyKey": True, "tripoKey": "tripo-secret-key-42", "meshProvider": "tripo"})
+        cleared = self.studio.bootstrap({})["settings"]
+        self.assertFalse(cleared["hasMeshyKey"])
+        self.assertTrue(cleared["hasTripoKey"])
+        self.assertEqual(cleared["meshProvider"], "tripo")
+        self.assertNotIn("tripo-secret-key-42", json.dumps(cleared))
+
+        with self.assertRaises(MeshError) as no_meshy:
+            generate_mesh("meshy", "a chair", [], lambda _text: None, {"meshy_key": ""}, transport=self.fail_transport, pause=0)
+        self.assertIn("Meshy API key", str(no_meshy.exception))
+        with self.assertRaises(MeshError) as no_tripo:
+            generate_mesh("tripo", "a chair", [], lambda _text: None, {"tripo_key": ""}, transport=self.fail_transport, pause=0)
+        self.assertIn("Tripo API key", str(no_tripo.exception))
+        with self.assertRaises(MeshError):
+            generate_mesh("unknown", "a chair", [], lambda _text: None, {}, pause=0)
+
+        secret = "meshy-secret-key-99"
+        leaked = {}
+
+        def refuse(method, url, headers, body):
+            leaked["auth"] = headers.get("Authorization", "")
+            return 401, f"denied {secret}".encode()
+
+        with self.assertRaises(MeshError) as refused:
+            generate_mesh("meshy", "a chair", [], lambda _text: None, {"meshy_key": secret}, transport=refuse, pause=0)
+        self.assertNotIn(secret, str(refused.exception))
+        self.assertIn(secret, leaked["auth"])
+
+        calls = []
+
+        def meshy_text(method, url, headers, body):
+            calls.append((method, url))
+            if method == "POST" and url.endswith("/text-to-3d") and body and b'"preview"' in body:
+                return 200, b'{"result":"preview-1"}'
+            if method == "GET" and url.endswith("/preview-1"):
+                return 200, b'{"status":"SUCCEEDED"}'
+            if method == "POST" and b'"refine"' in (body or b""):
+                return 200, b'{"result":"refine-1"}'
+            if method == "GET" and url.endswith("/refine-1"):
+                return 200, json.dumps({"status": "SUCCEEDED", "model_urls": {"glb": "https://assets.meshy.ai/model.glb"}}).encode()
+            if url == "https://assets.meshy.ai/model.glb":
+                return 200, cube_glb()
+            raise AssertionError(method + " " + url)
+
+        glb = generate_mesh("meshy", "a wooden chair", [], lambda _text: None, {"meshy_key": secret}, transport=meshy_text, pause=0)
+        self.assertTrue(glb.startswith(b"glTF"))
+        self.assertEqual(sum(1 for method, _url in calls if method == "POST"), 2)
+
+        def meshy_image(method, url, headers, body):
+            if method == "POST":
+                self.assertIn(b"image_url", body)
+                return 200, b'{"result":"image-1"}'
+            if method == "GET" and url.endswith("/image-1"):
+                return 200, json.dumps({"status": "FAILED"}).encode()
+            raise AssertionError(url)
+
+        image = self.tmp.name + "/ref.png"
+        Image.new("RGB", (8, 8), (10, 20, 30)).save(image)
+        with self.assertRaises(MeshError) as failed:
+            generate_mesh("meshy", "pose", [image], lambda _text: None, {"meshy_key": secret}, transport=meshy_image, pause=0)
+        self.assertIn("could not build", str(failed.exception))
+
+        def tripo_ok(method, url, headers, body):
+            if url.endswith("/upload"):
+                self.assertIn(b"reference.png", body)
+                return 200, b'{"code":0,"data":{"image_token":"tok-1"}}'
+            if method == "POST" and url.endswith("/task"):
+                self.assertIn(b"tok-1", body)
+                return 200, b'{"code":0,"data":{"task_id":"task-1"}}'
+            if method == "GET" and url.endswith("/task-1"):
+                return 200, json.dumps({"code": 0, "data": {"status": "success", "output": {"model": "https://api.tripo3d.ai/dl/model.glb"}}}).encode()
+            if url == "https://api.tripo3d.ai/dl/model.glb":
+                return 200, cube_glb()
+            raise AssertionError(url)
+
+        lifted = generate_mesh("tripo", "pose", [image], lambda _text: None, {"tripo_key": "tripo-secret-key-42"}, transport=tripo_ok, pause=0)
+        self.assertTrue(lifted.startswith(b"glTF"))
+
+        def http_link(method, url, headers, body):
+            if method == "POST":
+                return 200, b'{"code":0,"data":{"task_id":"task-2"}}'
+            return 200, b'{"code":0,"data":{"status":"success","output":{"model":"http://api.tripo3d.ai/model.glb"}}}'
+
+        with self.assertRaises(MeshError) as insecure:
+            generate_mesh("tripo", "pose", [], lambda _text: None, {"tripo_key": "k"}, transport=http_link, pause=0)
+        self.assertIn("HTTPS", str(insecure.exception))
+
+        script = Path(self.tmp.name) / "backend.py"
+        obj_script = Path(self.tmp.name) / "obj_backend.py"
+        cube_path = Path(self.tmp.name) / "cube.glb"
+        cube_path.write_bytes(cube_glb())
+        script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            f"src = Path({str(cube_path)!r})\n"
+            "out = Path(sys.argv[sys.argv.index('--output') + 1])\n"
+            "out.write_bytes(src.read_bytes())\n",
+            encoding="utf-8",
+        )
+        obj_script.write_text(
+            "#!/usr/bin/env python3\n"
+            "import sys\n"
+            "from pathlib import Path\n"
+            "out = Path(sys.argv[sys.argv.index('--output') + 1])\n"
+            "out.write_text('v 0 0 0\\nv 1 0 0\\nv 0 1 0\\nf 1 2 3\\n', encoding='utf-8')\n",
+            encoding="utf-8",
+        )
+        script.chmod(0o755)
+        obj_script.chmod(0o755)
+        ready = self.studio.settings_save({"meshProvider": "local", "meshCommand": str(script)})
+        self.assertTrue(ready["settings"]["localReady"])
+        local = generate_mesh("local", "ignored", [image], lambda _text: None, {"mesh_command": str(script)}, pause=0)
+        self.assertTrue(local.startswith(b"glTF"))
+        converted = generate_mesh("local", "ignored", [image], lambda _text: None, {"mesh_command": str(obj_script)}, pause=0)
+        self.assertEqual(len(parse_positions(converted)), 3)
+        broken = Path(self.tmp.name) / "broken.py"
+        broken.write_text("#!/usr/bin/env python3\nimport sys\nsys.stderr.write('torch missing\\n')\nraise SystemExit(1)\n", encoding="utf-8")
+        broken.chmod(0o755)
+        with self.assertRaises(MeshError) as crashed:
+            generate_mesh("local", "ignored", [image], lambda _text: None, {"mesh_command": str(broken)}, pause=0)
+        self.assertIn("torch missing", str(crashed.exception))
+        self.assertNotIn("tripo-secret", str(crashed.exception))
+        roundtrip = glb_from_obj(obj_from_glb(cube_glb()).decode("utf-8"))
+        self.assertTrue(roundtrip.startswith(b"glTF"))
+
+    def fail_transport(self, method, url, headers, body):
+        raise AssertionError("provider should not call the network")
+
+
+def parse_positions(data: bytes):
+    from koma.mesh import parse_glb
+
+    positions, _indices = parse_glb(data)
+    return positions
+
 
 def render_silent(art: Path, target: Path) -> bytes:
     render_page(
