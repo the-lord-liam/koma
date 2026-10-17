@@ -105,7 +105,19 @@ Pose mode bends a rigged GLB or VRM. Pick a bone in the list, grouped by body pa
 Sitting is one of the built-in poses. The presets and the bone list sit beside the model.
 
 <p align="center">
-  <img src="docs/3d-pose.png" width="900" alt="Sitting pose on Sendagaya Shino, with the pose presets open">
+  <img src="docs/3d-pose.png" width="900" alt="Sitting pose on Sendagaya Shino, knees bent forward, with the pose presets open">
+</p>
+
+Fighting stance puts one leg forward and the hands up.
+
+<p align="center">
+  <img src="docs/3d-pose-fight.png" width="900" alt="Fighting stance on Sendagaya Shino, front knee bent, hands raised">
+</p>
+
+Pointing reaches one arm out. The other arm stays down.
+
+<p align="center">
+  <img src="docs/3d-pose-point.png" width="900" alt="Pointing pose on Sendagaya Shino, one arm forward">
 </p>
 
 ### Animation
