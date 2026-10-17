@@ -226,6 +226,15 @@ class Store:
               content TEXT NOT NULL,
               created_at TEXT NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS meshes (
+              id TEXT PRIMARY KEY,
+              character_id TEXT NOT NULL,
+              prompt TEXT NOT NULL DEFAULT '',
+              provider TEXT NOT NULL,
+              source TEXT NOT NULL,
+              glb_path TEXT NOT NULL,
+              created_at TEXT NOT NULL
+            );
             """
         )
         self._add_column("chapters", "volume_id", "TEXT NOT NULL DEFAULT ''")
@@ -406,6 +415,10 @@ class Store:
             self._write("DELETE FROM bot_groups WHERE project_id = ?", (project_id,))
             self._write("DELETE FROM bots WHERE project_id = ?", (project_id,))
             self._write("DELETE FROM notes WHERE project_id = ?", (project_id,))
+            self._write(
+                "DELETE FROM meshes WHERE character_id IN (SELECT id FROM characters WHERE project_id = ?)",
+                (project_id,),
+            )
             self._write("DELETE FROM volumes WHERE project_id = ?", (project_id,))
             self._write(
                 """
@@ -462,8 +475,11 @@ class Store:
                 JOIN chapters ON chapters.id = pages.chapter_id
                 WHERE chapters.project_id = ?
               )
+            UNION
+            SELECT glb_path FROM meshes
+              WHERE character_id IN (SELECT id FROM characters WHERE project_id = ?)
             """,
-            (project_id, project_id, project_id, project_id, project_id, project_id),
+            (project_id, project_id, project_id, project_id, project_id, project_id, project_id),
         )
         return [row["p"] for row in rows if row["p"]]
 
@@ -497,11 +513,40 @@ class Store:
     def delete_character(self, character_id: str) -> None:
         row = self.get_character(character_id)
         paths = [ref["image_path"] for ref in self.list_refs("character", character_id)]
+        paths.extend(mesh["glb_path"] for mesh in self.list_meshes(character_id))
         self._write("DELETE FROM refs WHERE owner_kind = 'character' AND owner_id = ?", (character_id,))
+        self._write("DELETE FROM meshes WHERE character_id = ?", (character_id,))
         self._write("DELETE FROM characters WHERE id = ?", (character_id,))
         self.touch(row["project_id"])
         for path in paths:
             self._drop(path)
+
+    def create_mesh(self, character_id: str, prompt: str, provider: str, source: str, glb_path: str) -> dict:
+        mesh_id = new_id()
+        self._write(
+            """INSERT INTO meshes (id, character_id, prompt, provider, source, glb_path, created_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            (mesh_id, character_id, prompt, provider, source, glb_path, now()),
+        )
+        return self.get_mesh(mesh_id)
+
+    def list_meshes(self, character_id: str) -> list[dict]:
+        return self._all(
+            "SELECT * FROM meshes WHERE character_id = ? ORDER BY created_at DESC",
+            (character_id,),
+        )
+
+    def get_mesh(self, mesh_id: str) -> dict:
+        row = self._one("SELECT * FROM meshes WHERE id = ?", (mesh_id,))
+        if row is None:
+            raise KeyError("Model not found")
+        return row
+
+    def delete_mesh(self, mesh_id: str) -> dict:
+        row = self.get_mesh(mesh_id)
+        self._write("DELETE FROM meshes WHERE id = ?", (mesh_id,))
+        self._drop(row["glb_path"])
+        return row
 
     def create_location(self, project_id: str, name: str) -> dict:
         location_id = new_id()
