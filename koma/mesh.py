@@ -13,7 +13,9 @@ from __future__ import annotations
 
 import base64
 import json
+import math
 import os
+import re
 import shlex
 import shutil
 import struct
@@ -241,6 +243,261 @@ def apply_morph(
         delta = deltas[index] if index < len(deltas) else (0.0, 0.0, 0.0)
         moved.append((point[0] + delta[0] * weight, point[1] + delta[1] * weight, point[2] + delta[2] * weight))
     return moved
+
+
+def humanoid_bones(data: bytes) -> dict[str, int]:
+    """VRM humanoid names to node indexes, or a guess from node names."""
+    document, _blob = _chunks(data)
+    mapped = _vrm_humanoid(document)
+    if mapped:
+        return mapped
+    return humanoid_from_names(_named_nodes(document))
+
+
+def humanoid_from_names(nodes: list[tuple[int, str, int | None]]) -> dict[str, int]:
+    """Map (index, name, parent) rows onto humanoid bone names."""
+    assigned, used = _direct_bones(nodes)
+    spine = _name_chain(nodes, ("hips", "pelvis", "spine", "chest", "torso", "abdomen"), "", used)
+    _take_chain(assigned, used, spine, ("hips", "spine", "chest", "upperChest"))
+    neck = _name_chain(nodes, ("neck", "head"), "", used)
+    if neck and "neck" not in assigned:
+        assigned["neck"] = neck[0]
+        used.add(neck[0])
+        neck = neck[1:]
+    if neck and "head" not in assigned:
+        assigned["head"] = neck[-1]
+        used.add(neck[-1])
+    for side in ("left", "right"):
+        arms = _name_chain(nodes, ("shoulder", "arm", "forearm", "elbow", "wrist", "hand"), side, used)
+        _take_chain(assigned, used, arms, _fit_slots(len(arms), (
+            f"{side}Shoulder", f"{side}UpperArm", f"{side}LowerArm", f"{side}Hand",
+        ), True))
+        legs = _name_chain(nodes, ("upleg", "thigh", "leg", "calf", "shin", "knee", "foot", "toe", "ball"), side, used)
+        _take_chain(assigned, used, legs, _fit_slots(len(legs), (
+            f"{side}UpperLeg", f"{side}LowerLeg", f"{side}Foot", f"{side}Toes",
+        ), False))
+    return assigned
+
+
+def skin_points(
+    points: list[tuple[float, float, float]],
+    joints: list[tuple[int, int, int, int]],
+    weights: list[tuple[float, float, float, float]],
+    matrices: list[list[float]],
+) -> list[tuple[float, float, float]]:
+    """Linear blend skinning. `matrices` are joint matrices in the point's space."""
+    skinned = []
+    for index, point in enumerate(points):
+        ids = joints[index] if index < len(joints) else (0, 0, 0, 0)
+        blend = weights[index] if index < len(weights) else (1.0, 0.0, 0.0, 0.0)
+        total = [0.0, 0.0, 0.0]
+        covered = 0.0
+        for slot in range(4):
+            weight = float(blend[slot])
+            if weight == 0.0:
+                continue
+            joint = ids[slot]
+            if joint < 0 or joint >= len(matrices):
+                continue
+            moved = _mul_point(matrices[joint], point)
+            total[0] += moved[0] * weight
+            total[1] += moved[1] * weight
+            total[2] += moved[2] * weight
+            covered += weight
+        if covered == 0.0:
+            skinned.append(point)
+        else:
+            skinned.append((total[0], total[1], total[2]))
+    return skinned
+
+
+def joint_matrix(mesh_world: list[float], joint_world: list[float], inverse_bind: list[float]) -> list[float]:
+    """glTF joint matrix that reproduces the bind pose when worlds are the bind worlds."""
+    return _mul_matrix(_mul_matrix(_invert_matrix(mesh_world), joint_world), inverse_bind)
+
+
+def _mul_point(matrix: list[float], point: tuple[float, float, float]) -> tuple[float, float, float]:
+    x, y, z = point
+    return (
+        matrix[0] * x + matrix[4] * y + matrix[8] * z + matrix[12],
+        matrix[1] * x + matrix[5] * y + matrix[9] * z + matrix[13],
+        matrix[2] * x + matrix[6] * y + matrix[10] * z + matrix[14],
+    )
+
+
+def _invert_matrix(matrix: list[float]) -> list[float]:
+    rows = [[matrix[column * 4 + row] for column in range(4)] for row in range(4)]
+    inverse = [[1.0 if row == column else 0.0 for column in range(4)] for row in range(4)]
+    for column in range(4):
+        pivot = max(range(column, 4), key=lambda row: abs(rows[row][column]))
+        if abs(rows[pivot][column]) < 1e-12:
+            return [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+        rows[column], rows[pivot] = rows[pivot], rows[column]
+        inverse[column], inverse[pivot] = inverse[pivot], inverse[column]
+        scale = rows[column][column]
+        for cell in range(4):
+            rows[column][cell] /= scale
+            inverse[column][cell] /= scale
+        for row in range(4):
+            if row == column:
+                continue
+            factor = rows[row][column]
+            for cell in range(4):
+                rows[row][cell] -= factor * rows[column][cell]
+                inverse[row][cell] -= factor * inverse[column][cell]
+    out = [0.0] * 16
+    for row in range(4):
+        for column in range(4):
+            out[column * 4 + row] = inverse[row][column]
+    return out
+
+
+_BONE_ALIASES = (
+    ("hips", ("hips", "pelvis")),
+    ("spine", ("spine",)),
+    ("chest", ("chest",)),
+    ("upperChest", ("upperchest",)),
+    ("neck", ("neck",)),
+    ("head", ("head",)),
+    ("leftShoulder", ("leftshoulder", "lshoulder", "shoulderl")),
+    ("leftUpperArm", ("leftupperarm", "leftarm", "lupperarm", "upperarml")),
+    ("leftLowerArm", ("leftlowerarm", "leftforearm", "lforearm", "forearml", "lowerarml")),
+    ("leftHand", ("lefthand", "lhand", "handl")),
+    ("rightShoulder", ("rightshoulder", "rshoulder", "shoulderr")),
+    ("rightUpperArm", ("rightupperarm", "rightarm", "rupperarm", "upperarmr")),
+    ("rightLowerArm", ("rightlowerarm", "rightforearm", "rforearm", "forearmr", "lowerarmr")),
+    ("rightHand", ("righthand", "rhand", "handr")),
+    ("leftUpperLeg", ("leftupperleg", "leftupleg", "leftthigh", "lupleg", "thighl")),
+    ("leftLowerLeg", ("leftlowerleg", "leftleg", "leftcalf", "lcalf", "calfl")),
+    ("leftFoot", ("leftfoot", "lfoot", "footl")),
+    ("leftToes", ("lefttoes", "lefttoe", "ltoe", "toel")),
+    ("rightUpperLeg", ("rightupperleg", "rightupleg", "rightthigh", "rupleg", "thighr")),
+    ("rightLowerLeg", ("rightlowerleg", "rightleg", "rightcalf", "rcalf", "calfr")),
+    ("rightFoot", ("rightfoot", "rfoot", "footr")),
+    ("rightToes", ("righttoes", "righttoe", "rtoe", "toer")),
+)
+
+
+def _vrm_humanoid(document: dict) -> dict[str, int]:
+    found: dict[str, int] = {}
+    extensions = document.get("extensions") or {}
+    human = ((extensions.get("VRM") or {}).get("humanoid") or {})
+    for bone in human.get("humanBones") or []:
+        if not isinstance(bone, dict):
+            continue
+        name = bone.get("bone")
+        node = bone.get("node")
+        if isinstance(name, str) and isinstance(node, int):
+            found[name] = node
+    bones = (((extensions.get("VRMC_vrm") or {}).get("humanoid") or {}).get("humanBones") or {})
+    if isinstance(bones, dict):
+        for name, spec in bones.items():
+            node = spec.get("node") if isinstance(spec, dict) else None
+            if isinstance(name, str) and isinstance(node, int):
+                found[name] = node
+    return found
+
+
+def _named_nodes(document: dict) -> list[tuple[int, str, int | None]]:
+    nodes = document.get("nodes") or []
+    parent_of: dict[int, int] = {}
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            continue
+        for child in node.get("children") or []:
+            if isinstance(child, int):
+                parent_of[child] = index
+    named = []
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            continue
+        named.append((index, str(node.get("name") or ""), parent_of.get(index)))
+    return named
+
+
+def _compact_name(name: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", name.lower())
+
+
+def _bone_side(name: str) -> str:
+    raw = name.lower()
+    if "left" in raw or re.search(r"(^|[_\.])l($|[_\.])", raw) or "joint_l" in raw:
+        return "left"
+    if "right" in raw or re.search(r"(^|[_\.])r($|[_\.])", raw) or "joint_r" in raw:
+        return "right"
+    return ""
+
+
+def _direct_bones(nodes: list[tuple[int, str, int | None]]) -> tuple[dict[str, int], set[int]]:
+    assigned: dict[str, int] = {}
+    used: set[int] = set()
+    compacted = [(index, _compact_name(name)) for index, name, _parent in nodes]
+    for bone, aliases in _BONE_ALIASES:
+        best = None
+        best_score = None
+        for index, compact in compacted:
+            if index in used or not compact:
+                continue
+            for alias in aliases:
+                if alias not in compact:
+                    continue
+                score = (-len(alias), 0 if compact == alias else 1, len(compact))
+                if best_score is None or score < best_score:
+                    best_score = score
+                    best = index
+        if best is not None:
+            assigned[bone] = best
+            used.add(best)
+    return assigned, used
+
+
+def _node_depth(index: int, parent_of: dict[int, int | None]) -> int:
+    depth = 0
+    seen = set()
+    while index in parent_of and parent_of[index] is not None and index not in seen:
+        seen.add(index)
+        index = parent_of[index]
+        depth += 1
+    return depth
+
+
+def _name_chain(nodes: list[tuple[int, str, int | None]], words: tuple[str, ...], side: str, used: set[int]) -> list[int]:
+    parent_of = {index: parent for index, _name, parent in nodes}
+    picked = []
+    for index, name, _parent in nodes:
+        if index in used:
+            continue
+        if side and _bone_side(name) != side:
+            continue
+        if side == "" and _bone_side(name):
+            continue
+        compact = _compact_name(name)
+        if any(word in compact for word in words):
+            picked.append(index)
+    picked.sort(key=lambda index: (_node_depth(index, parent_of), index))
+    return picked
+
+
+def _fit_slots(count: int, slots: tuple[str, ...], drop_first: bool) -> tuple[str, ...]:
+    if count <= 0:
+        return ()
+    if count >= len(slots):
+        return slots
+    if drop_first and len(slots) > 1:
+        return slots[1 : 1 + count]
+    return slots[:count]
+
+
+def _take_chain(assigned: dict[str, int], used: set[int], chain: list[int], slots: tuple[str, ...]) -> None:
+    cursor = 0
+    for bone in slots:
+        if not bone or bone in assigned:
+            continue
+        if cursor >= len(chain):
+            break
+        assigned[bone] = chain[cursor]
+        used.add(chain[cursor])
+        cursor += 1
 
 
 def obj_from_glb(data: bytes) -> bytes:
@@ -588,9 +845,43 @@ def _bake_scene_nodes(data: bytes) -> bytes:
     mutable = bytearray(blob)
     baked: set[int] = set()
     changed = False
+    skinned: set[int] = set()
+    joint_nodes: set[int] = set()
+    for index, node in enumerate(nodes):
+        if isinstance(node, dict) and node.get("skin") is not None:
+            skinned.add(index)
+    for skin in document.get("skins") or []:
+        if not isinstance(skin, dict):
+            continue
+        for joint in skin.get("joints") or []:
+            if isinstance(joint, int):
+                joint_nodes.add(joint)
+    parent_of: dict[int, int] = {}
+    for index, node in enumerate(nodes):
+        if not isinstance(node, dict):
+            continue
+        for child in node.get("children") or []:
+            if isinstance(child, int):
+                parent_of[child] = index
+
+    def ancestors(index: int) -> list[int]:
+        found = []
+        seen = set()
+        while index in parent_of and index not in seen:
+            seen.add(index)
+            index = parent_of[index]
+            found.append(index)
+        return found
+
+    baked_nodes: set[int] = set()
     for mesh_index, node_indices in users.items():
         meshes = document.get("meshes") or []
         if mesh_index < 0 or mesh_index >= len(meshes):
+            continue
+        if any(index in skinned or index in joint_nodes for index in node_indices):
+            continue
+        above = [parent for index in node_indices for parent in ancestors(index)]
+        if any(parent in joint_nodes or parent in skinned for parent in above):
             continue
         matrices = [worlds[index] for index in node_indices]
         if all(_is_identity(matrix) for matrix in matrices):
@@ -610,10 +901,13 @@ def _bake_scene_nodes(data: bytes) -> bytes:
                 if isinstance(target, dict) and "POSITION" in target:
                     _transform_positions(document, mutable, target["POSITION"], matrix, False, baked)
         changed = True
+        baked_nodes.update(node_indices)
+        baked_nodes.update(above)
     if not changed:
         return data
-    for node in nodes:
-        if isinstance(node, dict):
+    for index in baked_nodes:
+        node = nodes[index]
+        if isinstance(node, dict) and index not in joint_nodes:
             node.pop("matrix", None)
             node.pop("translation", None)
             node.pop("rotation", None)

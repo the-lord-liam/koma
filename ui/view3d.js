@@ -104,12 +104,14 @@ function parseGlb(buffer) {
   const uvs = [];
   const indices = [];
   const ranges = [];
+  const influences = [];
   const vecCache = new Map();
   const uvCache = new Map();
   const morphCache = new Map();
   const shapeMap = new Map();
   const shapes = collectShapes(document);
   const nodes = document.nodes || [];
+  const rig = collectRig(document, bin);
   const meshNodes = [];
   nodes.forEach((node, index) => {
     if (node && node.mesh != null) meshNodes.push(index);
@@ -119,7 +121,16 @@ function parseGlb(buffer) {
     const listed = nodeIndex == null
       ? (document.meshes || []).map((mesh, index) => [index, mesh])
       : [[nodes[nodeIndex].mesh, (document.meshes || [])[nodes[nodeIndex].mesh]]];
-    const matrix = nodeIndex == null ? null : worlds.get(nodeIndex);
+    const node = nodeIndex == null ? null : nodes[nodeIndex];
+    const skin = node && node.skin != null ? rig.skins[node.skin] : null;
+    const skinned = Boolean(skin && skin.joints.length);
+    let useIndex = -1;
+    if (skinned) {
+      const meshWorld = worlds.get(nodeIndex) || identityMatrix();
+      useIndex = rig.uses.length;
+      rig.uses.push({ skin: node.skin, meshWorld, invMesh: invertMatrix(meshWorld) });
+    }
+    const matrix = skinned || nodeIndex == null ? null : worlds.get(nodeIndex);
     for (const pair of listed) {
       const meshIndex = pair[0];
       const mesh = pair[1];
@@ -133,7 +144,15 @@ function parseGlb(buffer) {
           chunk = readVec3(document, bin, attr.POSITION);
           vecCache.set(attr.POSITION, chunk);
         }
-        if (matrix && !isIdentity(matrix)) chunk = chunk.map((point) => mulPoint(matrix, point));
+        let joints = null;
+        let weights = null;
+        if (skinned && attr.JOINTS_0 != null && attr.WEIGHTS_0 != null) {
+          joints = readVec4(document, bin, attr.JOINTS_0, false);
+          weights = readVec4(document, bin, attr.WEIGHTS_0, true);
+        }
+        const posed = Boolean(joints && weights);
+        const placed = posed ? null : (matrix || (skinned ? worlds.get(nodeIndex) : null));
+        if (placed && !isIdentity(placed)) chunk = chunk.map((point) => mulPoint(placed, point));
         let uv = null;
         if (attr.TEXCOORD_0 != null) {
           uv = uvCache.get(attr.TEXCOORD_0);
@@ -148,7 +167,7 @@ function parseGlb(buffer) {
           const shift = material.transform.offset || [0, 0];
           uv = uv.map((coord) => [coord[0] * scale[0] + shift[0], coord[1] * scale[1] + shift[1]]);
         }
-        const morphs = morphSources(document, bin, prim, meshIndex, matrix, shapes, morphCache);
+        const morphs = morphSources(document, bin, prim, meshIndex, posed ? null : placed, shapes, morphCache);
         const local = prim.indices == null ? chunk.map((_, index) => index) : readScalar(document, bin, prim.indices);
         const remap = new Map();
         const start = indices.length;
@@ -160,6 +179,15 @@ function parseGlb(buffer) {
             remap.set(index, mapped);
             positions.push(chunk[index]);
             uvs.push(uv && uv[index] ? uv[index] : [0, 0]);
+            if (posed) {
+              influences.push({
+                j: joints[index] || [0, 0, 0, 0],
+                w: weights[index] || [1, 0, 0, 0],
+                use: useIndex,
+              });
+            } else {
+              influences.push(null);
+            }
             stashMorphs(shapeMap, morphs, index, mapped);
           }
           indices.push(mapped);
@@ -171,6 +199,8 @@ function parseGlb(buffer) {
   if (positions.length < 3 || indices.length < 3) {
     throw new Error("That model has no triangle mesh Koma can show.");
   }
+  const hasSkin = influences.some((item) => item);
+  const humanoid = hasSkin ? humanoidMap(document) : {};
   return {
     positions,
     uvs,
@@ -180,6 +210,10 @@ function parseGlb(buffer) {
     shapeNames: shapes.names.filter((name) => shapeMap.has(name)),
     materials: (document.materials || []).map((_mat, index) => materialView(document, index)),
     images: readImages(document, bin),
+    rig: hasSkin ? rig : null,
+    influences: hasSkin ? influences : null,
+    humanoid,
+    boneList: boneList(humanoid),
   };
 }
 
@@ -505,6 +539,11 @@ const meshCamera = window.meshCamera = {
   shapeKey: "",
   angle: "",
   thumbFor: {},
+  poseMode: false,
+  pose: {},
+  bones: [],
+  boneKey: "",
+  selected: "",
 };
 let meshSpin = 0;
 
@@ -528,23 +567,33 @@ function meshFlags() {
     backdrop: meshCamera.backdrop,
     shape: meshCamera.shape,
     angle: meshCamera.angle,
+    poseMode: meshCamera.poseMode,
+    selected: meshCamera.selected || "",
   };
 }
 
 function showMesh(canvas, geom) {
   const id = canvas.dataset.meshId || "";
-  if (!geom.centered) {
-    centerGeometry(geom);
-    geom.centered = true;
-    geom.rest = geom.positions.map((point) => [point[0], point[1], point[2]]);
-  }
   if (meshCamera.meshId !== id) {
     meshCamera.shape = "";
     meshCamera.angle = "";
     meshCamera.shapeNames = [];
     meshCamera.shapeKey = "";
+    meshCamera.pose = {};
+    meshCamera.bones = [];
+    meshCamera.boneKey = "";
+    meshCamera.selected = "";
   }
-  poseGeometry(geom);
+  if (geom.rig) {
+    applyPose(geom);
+  } else if (!geom.centered) {
+    centerGeometry(geom);
+    geom.centered = true;
+    geom.rest = geom.positions.map((point) => [point[0], point[1], point[2]]);
+    poseGeometry(geom);
+  } else {
+    poseGeometry(geom);
+  }
   const span = Math.max(geom.half[0], geom.half[1], 0.05);
   const textured = geom.materials.some((mat) => mat.element);
   const triangles = geom.indices.length / 3;
@@ -573,7 +622,7 @@ function showMesh(canvas, geom) {
       redraw(canvas);
     }
     queueThumb(canvas);
-    publishShapes(geom);
+    publishMeshUi(geom);
   };
   if (useGl) {
     canvas._gl = gl;
@@ -597,12 +646,20 @@ function poseGeometry(geom) {
   geom._glBuilt = null;
 }
 
-function publishShapes(geom) {
+function publishMeshUi(geom) {
   const names = geom.shapeNames || [];
-  const key = `${meshCamera.meshId}\n${names.join("\n")}`;
-  const changed = meshCamera.shapeKey !== key;
-  meshCamera.shapeKey = key;
+  const shapeKey = `${meshCamera.meshId}\n${names.join("\n")}`;
+  const bones = geom.boneList || [];
+  const boneKey = `${meshCamera.meshId}\n${bones.map((bone) => bone.name).join(",")}`;
+  const changed = meshCamera.shapeKey !== shapeKey || meshCamera.boneKey !== boneKey;
+  meshCamera.shapeKey = shapeKey;
   meshCamera.shapeNames = names.slice();
+  meshCamera.boneKey = boneKey;
+  meshCamera.bones = bones;
+  if (!meshCamera.selected && bones.length) {
+    const upper = bones.find((bone) => bone.name === "leftUpperArm") || bones[0];
+    meshCamera.selected = upper.name;
+  }
   if (changed && window.render) render();
 }
 
@@ -649,11 +706,26 @@ function frameRadius(geom) {
 function bindOrbit(canvas) {
   canvas.addEventListener("contextmenu", (event) => event.preventDefault());
   canvas.addEventListener("pointerdown", (event) => {
-    const mode = event.button === 2 || event.shiftKey ? "pan" : (event.button === 1 || event.altKey ? "roll" : "orbit");
+    const point = canvasPoint(canvas, event);
+    const axis = meshCamera.poseMode && event.button === 0 && !event.shiftKey && !event.altKey
+      ? pickAxis(canvas, point)
+      : null;
+    const mode = axis ? "bone" : (event.button === 2 || event.shiftKey ? "pan" : (event.button === 1 || event.altKey ? "roll" : "orbit"));
+    const selected = meshCamera.selected;
+    const geom = canvas._geom;
+    const node = geom && geom.humanoid ? geom.humanoid[selected] : null;
+    const current = selected && meshCamera.pose[selected]
+      ? meshCamera.pose[selected].slice()
+      : (geom && node != null ? geom.rig.nodes[node].r.slice() : [0, 0, 0, 1]);
     canvas._drag = {
       x: event.clientX,
       y: event.clientY,
+      px: point.x,
+      py: point.y,
       mode,
+      axis,
+      quat: current,
+      moved: false,
       yaw: meshCamera.yaw,
       pitch: meshCamera.pitch,
       roll: meshCamera.roll,
@@ -667,6 +739,11 @@ function bindOrbit(canvas) {
     if (!drag) return;
     const dx = event.clientX - drag.x;
     const dy = event.clientY - drag.y;
+    if (Math.abs(dx) + Math.abs(dy) > 4) drag.moved = true;
+    if (drag.mode === "bone") {
+      rotateSelected(canvas, drag, dx);
+      return;
+    }
     if (drag.mode === "pan") {
       meshCamera.panX = drag.panX + dx;
       meshCamera.panY = drag.panY + dy;
@@ -678,7 +755,21 @@ function bindOrbit(canvas) {
     }
     redraw(canvas);
   });
-  const end = () => { canvas._drag = null; };
+  const end = (event) => {
+    const drag = canvas._drag;
+    canvas._drag = null;
+    if (!drag || !meshCamera.poseMode) return;
+    if (drag.mode === "bone") {
+      if (window.render) render();
+      return;
+    }
+    if (drag.moved || drag.mode !== "orbit") return;
+    const point = canvasPoint(canvas, event);
+    const bone = pickBone(canvas, point);
+    if (!bone || bone === meshCamera.selected) return;
+    meshCamera.selected = bone;
+    if (window.render) render();
+  };
   canvas.addEventListener("pointerup", end);
   canvas.addEventListener("pointercancel", end);
   canvas.addEventListener("wheel", (event) => {
@@ -928,6 +1019,7 @@ function drawCanvas(canvas) {
       ctx.stroke();
     }
   }
+  paintPose(ctx, canvas);
 }
 
 function glProgram(gl) {
@@ -1058,6 +1150,7 @@ function drawGl(canvas) {
     }
     gl.uniform1f(gl._line, 0);
   }
+  paintPoseGl(gl, canvas);
 }
 
 function drawRange(gl, geom, range, _line) {
@@ -1238,4 +1331,918 @@ function dot(a, b) {
 function norm(v) {
   const length = Math.hypot(v[0], v[1], v[2]) || 1;
   return [v[0] / length, v[1] / length, v[2] / length];
+}
+
+function identityMatrix() {
+  return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+}
+
+function invertMatrix(matrix) {
+  const rows = [0, 1, 2, 3].map((row) => [0, 1, 2, 3].map((column) => matrix[column * 4 + row]));
+  const inverse = [0, 1, 2, 3].map((row) => [0, 1, 2, 3].map((column) => (row === column ? 1 : 0)));
+  for (let column = 0; column < 4; column += 1) {
+    let pivot = column;
+    for (let row = column + 1; row < 4; row += 1) {
+      if (Math.abs(rows[row][column]) > Math.abs(rows[pivot][column])) pivot = row;
+    }
+    if (Math.abs(rows[pivot][column]) < 1e-12) return identityMatrix();
+    [rows[column], rows[pivot]] = [rows[pivot], rows[column]];
+    [inverse[column], inverse[pivot]] = [inverse[pivot], inverse[column]];
+    const scale = rows[column][column];
+    for (let cell = 0; cell < 4; cell += 1) {
+      rows[column][cell] /= scale;
+      inverse[column][cell] /= scale;
+    }
+    for (let row = 0; row < 4; row += 1) {
+      if (row === column) continue;
+      const factor = rows[row][column];
+      for (let cell = 0; cell < 4; cell += 1) {
+        rows[row][cell] -= factor * rows[column][cell];
+        inverse[row][cell] -= factor * inverse[column][cell];
+      }
+    }
+  }
+  const out = new Array(16);
+  for (let row = 0; row < 4; row += 1) {
+    for (let column = 0; column < 4; column += 1) out[column * 4 + row] = inverse[row][column];
+  }
+  return out;
+}
+
+function readVec4(document, bin, index, asWeight) {
+  const accessor = document.accessors[index];
+  const view = accessor ? document.bufferViews[accessor.bufferView] : null;
+  if (!accessor || !view || accessor.type !== "VEC4") return null;
+  const width = { 5120: 1, 5121: 1, 5122: 2, 5123: 2, 5125: 4, 5126: 4 }[accessor.componentType];
+  if (!width) return null;
+  const start = (view.byteOffset || 0) + (accessor.byteOffset || 0);
+  const stride = view.byteStride || width * 4;
+  const data = new DataView(bin.buffer, bin.byteOffset, bin.byteLength);
+  const values = [];
+  for (let i = 0; i < accessor.count; i += 1) {
+    const at = start + i * stride;
+    const tuple = [0, 0, 0, 0];
+    for (let k = 0; k < 4; k += 1) {
+      const off = at + k * width;
+      let value = 0;
+      if (accessor.componentType === 5126) value = data.getFloat32(off, true);
+      else if (accessor.componentType === 5121) value = data.getUint8(off);
+      else if (accessor.componentType === 5123) value = data.getUint16(off, true);
+      else if (accessor.componentType === 5125) value = data.getUint32(off, true);
+      else if (accessor.componentType === 5120) value = data.getInt8(off);
+      else value = data.getInt16(off, true);
+      if (asWeight && accessor.componentType !== 5126) {
+        if (accessor.componentType === 5121) value /= 255;
+        else if (accessor.componentType === 5123) value /= 65535;
+        else if (accessor.componentType === 5120) value = Math.max(value / 127, -1);
+        else value = Math.max(value / 32767, -1);
+      }
+      tuple[k] = value;
+    }
+    values.push(tuple);
+  }
+  return values;
+}
+
+function readMat4(document, bin, index) {
+  const accessor = document.accessors[index];
+  const view = accessor ? document.bufferViews[accessor.bufferView] : null;
+  if (!accessor || !view || accessor.componentType !== 5126 || accessor.type !== "MAT4") return null;
+  const start = (view.byteOffset || 0) + (accessor.byteOffset || 0);
+  const stride = view.byteStride || 64;
+  const data = new DataView(bin.buffer, bin.byteOffset, bin.byteLength);
+  const values = [];
+  for (let i = 0; i < accessor.count; i += 1) {
+    const at = start + i * stride;
+    const matrix = new Array(16);
+    for (let k = 0; k < 16; k += 1) matrix[k] = data.getFloat32(at + k * 4, true);
+    values.push(matrix);
+  }
+  return values;
+}
+
+function collectRig(document, bin) {
+  const skins = (document.skins || []).map((skin) => {
+    const joints = ((skin && skin.joints) || []).slice();
+    let ibms = null;
+    if (skin && skin.inverseBindMatrices != null) {
+      try { ibms = readMat4(document, bin, skin.inverseBindMatrices); } catch (_error) { ibms = null; }
+    }
+    if (!ibms) ibms = joints.map(() => identityMatrix());
+    return { joints, ibms };
+  });
+  const nodes = (document.nodes || []).map((node) => {
+    const item = node || {};
+    return {
+      name: item.name || "",
+      t: (item.translation || [0, 0, 0]).slice(0, 3),
+      r: (item.rotation || [0, 0, 0, 1]).slice(0, 4),
+      s: (item.scale || [1, 1, 1]).slice(0, 3),
+      matrix: item.matrix && item.matrix.length === 16 ? item.matrix.slice() : null,
+    };
+  });
+  const parent = nodes.map(() => -1);
+  (document.nodes || []).forEach((node, index) => {
+    for (const child of (node && node.children) || []) {
+      if (child >= 0 && child < parent.length) parent[child] = index;
+    }
+  });
+  return { skins, uses: [], nodes, parent };
+}
+
+const BONE_ALIASES = [
+  ["hips", ["hips", "pelvis"]],
+  ["spine", ["spine"]],
+  ["chest", ["chest"]],
+  ["upperChest", ["upperchest"]],
+  ["neck", ["neck"]],
+  ["head", ["head"]],
+  ["leftShoulder", ["leftshoulder", "lshoulder", "shoulderl"]],
+  ["leftUpperArm", ["leftupperarm", "leftarm", "lupperarm", "upperarml"]],
+  ["leftLowerArm", ["leftlowerarm", "leftforearm", "lforearm", "forearml", "lowerarml"]],
+  ["leftHand", ["lefthand", "lhand", "handl"]],
+  ["rightShoulder", ["rightshoulder", "rshoulder", "shoulderr"]],
+  ["rightUpperArm", ["rightupperarm", "rightarm", "rupperarm", "upperarmr"]],
+  ["rightLowerArm", ["rightlowerarm", "rightforearm", "rforearm", "forearmr", "lowerarmr"]],
+  ["rightHand", ["righthand", "rhand", "handr"]],
+  ["leftUpperLeg", ["leftupperleg", "leftupleg", "leftthigh", "lupleg", "thighl"]],
+  ["leftLowerLeg", ["leftlowerleg", "leftleg", "leftcalf", "lcalf", "calfl"]],
+  ["leftFoot", ["leftfoot", "lfoot", "footl"]],
+  ["leftToes", ["lefttoes", "lefttoe", "ltoe", "toel"]],
+  ["rightUpperLeg", ["rightupperleg", "rightupleg", "rightthigh", "rupleg", "thighr"]],
+  ["rightLowerLeg", ["rightlowerleg", "rightleg", "rightcalf", "rcalf", "calfr"]],
+  ["rightFoot", ["rightfoot", "rfoot", "footr"]],
+  ["rightToes", ["righttoes", "righttoe", "rtoe", "toer"]],
+];
+
+function humanoidMap(document) {
+  const mapped = vrmHumanoid(document);
+  if (Object.keys(mapped).length) return mapped;
+  const nodes = (document.nodes || []).map((node, index) => ({
+    index,
+    name: (node && node.name) || "",
+    parent: -1,
+  }));
+  (document.nodes || []).forEach((node, index) => {
+    for (const child of (node && node.children) || []) {
+      if (nodes[child]) nodes[child].parent = index;
+    }
+  });
+  return humanoidFromNames(nodes);
+}
+
+function vrmHumanoid(document) {
+  const found = {};
+  const groups = ((((document.extensions || {}).VRM || {}).humanoid || {}).humanBones) || [];
+  for (const bone of groups) {
+    if (bone && typeof bone.bone === "string" && Number.isInteger(bone.node)) found[bone.bone] = bone.node;
+  }
+  const bones = ((((document.extensions || {}).VRMC_vrm || {}).humanoid || {}).humanBones) || {};
+  Object.keys(bones).forEach((name) => {
+    const spec = bones[name];
+    if (spec && Number.isInteger(spec.node)) found[name] = spec.node;
+  });
+  return found;
+}
+
+function humanoidFromNames(nodes) {
+  const assigned = {};
+  const used = new Set();
+  const compact = nodes.map((node) => [node.index, String(node.name || "").toLowerCase().replace(/[^a-z0-9]/g, "")]);
+  for (const pair of BONE_ALIASES) {
+    const bone = pair[0];
+    const aliases = pair[1];
+    let best = null;
+    let bestScore = null;
+    for (const item of compact) {
+      const index = item[0];
+      const name = item[1];
+      if (used.has(index) || !name) continue;
+      for (const alias of aliases) {
+        if (!name.includes(alias)) continue;
+        const score = [-alias.length, name === alias ? 0 : 1, name.length];
+        if (!bestScore || score[0] < bestScore[0] || (score[0] === bestScore[0] && score[1] < bestScore[1]) || (score[0] === bestScore[0] && score[1] === bestScore[1] && score[2] < bestScore[2])) {
+          bestScore = score;
+          best = index;
+        }
+      }
+    }
+    if (best != null) {
+      assigned[bone] = best;
+      used.add(best);
+    }
+  }
+  const spine = nameChain(nodes, ["hips", "pelvis", "spine", "chest", "torso", "abdomen"], "", used);
+  takeChain(assigned, used, spine, fitSlots(spine.length, ["hips", "spine", "chest", "upperChest"], false));
+  let neck = nameChain(nodes, ["neck", "head"], "", used);
+  if (neck.length && assigned.neck == null) {
+    assigned.neck = neck[0];
+    used.add(neck[0]);
+    neck = neck.slice(1);
+  }
+  if (neck.length && assigned.head == null) {
+    assigned.head = neck[neck.length - 1];
+    used.add(neck[neck.length - 1]);
+  }
+  ["left", "right"].forEach((side) => {
+    const arms = nameChain(nodes, ["shoulder", "arm", "forearm", "elbow", "wrist", "hand"], side, used);
+    takeChain(assigned, used, arms, fitSlots(arms.length, [`${side}Shoulder`, `${side}UpperArm`, `${side}LowerArm`, `${side}Hand`], true));
+    const legs = nameChain(nodes, ["upleg", "thigh", "leg", "calf", "shin", "knee", "foot", "toe", "ball"], side, used);
+    takeChain(assigned, used, legs, fitSlots(legs.length, [`${side}UpperLeg`, `${side}LowerLeg`, `${side}Foot`, `${side}Toes`], false));
+  });
+  return assigned;
+}
+
+function boneSide(name) {
+  const raw = String(name || "").toLowerCase();
+  if (raw.includes("left") || /(^|[_\.])l($|[_\.])/.test(raw) || raw.includes("joint_l")) return "left";
+  if (raw.includes("right") || /(^|[_\.])r($|[_\.])/.test(raw) || raw.includes("joint_r")) return "right";
+  return "";
+}
+
+function nameChain(nodes, words, side, used) {
+  const picked = [];
+  for (const node of nodes) {
+    if (used.has(node.index)) continue;
+    const sideName = boneSide(node.name);
+    if (side && sideName !== side) continue;
+    if (!side && sideName) continue;
+    const compact = String(node.name || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (words.some((word) => compact.includes(word))) picked.push(node.index);
+  }
+  const depthOf = (index) => {
+    let depth = 0;
+    const seen = new Set();
+    let cursor = index;
+    while (cursor >= 0 && !seen.has(cursor)) {
+      seen.add(cursor);
+      const node = nodes[cursor];
+      if (!node || node.parent == null || node.parent < 0) break;
+      cursor = node.parent;
+      depth += 1;
+    }
+    return depth;
+  };
+  picked.sort((a, b) => depthOf(a) - depthOf(b) || a - b);
+  return picked;
+}
+
+function fitSlots(count, slots, dropFirst) {
+  if (count <= 0) return [];
+  if (count >= slots.length) return slots;
+  if (dropFirst && slots.length > 1) return slots.slice(1, 1 + count);
+  return slots.slice(0, count);
+}
+
+function takeChain(assigned, used, chain, slots) {
+  let cursor = 0;
+  for (const bone of slots) {
+    if (!bone || assigned[bone] != null) continue;
+    if (cursor >= chain.length) break;
+    assigned[bone] = chain[cursor];
+    used.add(chain[cursor]);
+    cursor += 1;
+  }
+}
+
+const BONE_LABELS = {
+  hips: "Hips", spine: "Spine", chest: "Chest", upperChest: "Upper chest",
+  neck: "Neck", head: "Head", leftEye: "Left eye", rightEye: "Right eye",
+  leftShoulder: "Shoulder", leftUpperArm: "Upper arm", leftLowerArm: "Lower arm", leftHand: "Hand",
+  rightShoulder: "Shoulder", rightUpperArm: "Upper arm", rightLowerArm: "Lower arm", rightHand: "Hand",
+  leftUpperLeg: "Upper leg", leftLowerLeg: "Lower leg", leftFoot: "Foot", leftToes: "Toes",
+  rightUpperLeg: "Upper leg", rightLowerLeg: "Lower leg", rightFoot: "Foot", rightToes: "Toes",
+};
+
+const FINGER_BONES = [
+  "leftThumbProximal", "leftThumbIntermediate", "leftThumbDistal",
+  "leftIndexProximal", "leftIndexIntermediate", "leftIndexDistal",
+  "leftMiddleProximal", "leftMiddleIntermediate", "leftMiddleDistal",
+  "leftRingProximal", "leftRingIntermediate", "leftRingDistal",
+  "leftLittleProximal", "leftLittleIntermediate", "leftLittleDistal",
+  "rightThumbProximal", "rightThumbIntermediate", "rightThumbDistal",
+  "rightIndexProximal", "rightIndexIntermediate", "rightIndexDistal",
+  "rightMiddleProximal", "rightMiddleIntermediate", "rightMiddleDistal",
+  "rightRingProximal", "rightRingIntermediate", "rightRingDistal",
+  "rightLittleProximal", "rightLittleIntermediate", "rightLittleDistal",
+];
+
+function boneList(humanoid) {
+  const groups = [
+    ["Body", ["hips", "spine", "chest", "upperChest"]],
+    ["Head", ["neck", "head", "leftEye", "rightEye"]],
+    ["Left arm", ["leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand"]],
+    ["Right arm", ["rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand"]],
+    ["Left leg", ["leftUpperLeg", "leftLowerLeg", "leftFoot", "leftToes"]],
+    ["Right leg", ["rightUpperLeg", "rightLowerLeg", "rightFoot", "rightToes"]],
+  ];
+  const list = [];
+  for (const group of groups) {
+    for (const name of group[1]) {
+      if (humanoid[name] == null) continue;
+      list.push({ name, group: group[0], label: BONE_LABELS[name] || name });
+    }
+  }
+  for (const name of FINGER_BONES) {
+    if (humanoid[name] == null) continue;
+    const label = name.replace(/^(left|right)/, "").replace(/([A-Z])/g, " $1").trim();
+    list.push({ name, group: "Hands", label });
+  }
+  return list;
+}
+
+function applyPose(geom) {
+  if (!geom.rig) return;
+  if (!geom.bindPositions) geom.bindPositions = geom.positions.map((point) => [point[0], point[1], point[2]]);
+  if (!geom.bindCenter) {
+    const saved = meshCamera.pose;
+    meshCamera.pose = {};
+    const bind = posedPositions(geom);
+    meshCamera.pose = saved;
+    geom.bindCenter = centerOf(bind);
+    geom.half = halfOf(bind, geom.bindCenter);
+  }
+  const world = posedPositions(geom);
+  const center = geom.bindCenter;
+  geom.positions = world.map((point) => [point[0] - center[0], point[1] - center[1], point[2] - center[2]]);
+  geom._glBuilt = null;
+  geom.markers = markerPoints(geom);
+  geom.gizmo = gizmoLines(geom);
+}
+
+function centerOf(points) {
+  let minX = Infinity; let minY = Infinity; let minZ = Infinity;
+  let maxX = -Infinity; let maxY = -Infinity; let maxZ = -Infinity;
+  for (const point of points) {
+    minX = Math.min(minX, point[0]); maxX = Math.max(maxX, point[0]);
+    minY = Math.min(minY, point[1]); maxY = Math.max(maxY, point[1]);
+    minZ = Math.min(minZ, point[2]); maxZ = Math.max(maxZ, point[2]);
+  }
+  return [(minX + maxX) / 2, (minY + maxY) / 2, (minZ + maxZ) / 2];
+}
+
+function halfOf(points, center) {
+  let x = 0; let y = 0; let z = 0;
+  for (const point of points) {
+    x = Math.max(x, Math.abs(point[0] - center[0]));
+    y = Math.max(y, Math.abs(point[1] - center[1]));
+    z = Math.max(z, Math.abs(point[2] - center[2]));
+  }
+  return [x || 0.5, y || 0.5, z || 0.5];
+}
+
+function posedPositions(geom) {
+  const worlds = boneWorlds(geom, meshCamera.pose || {});
+  geom._worlds = worlds;
+  const mats = new Map();
+  geom.rig.uses.forEach((use, useIndex) => {
+    const skin = geom.rig.skins[use.skin];
+    if (!skin) return;
+    mats.set(useIndex, skin.joints.map((node, joint) => mul(mul(use.invMesh, worlds[node] || identityMatrix()), skin.ibms[joint] || identityMatrix())));
+  });
+  const deltas = geom.shapes && meshCamera.shape && geom.shapes.get ? geom.shapes.get(meshCamera.shape) : null;
+  const out = new Array(geom.bindPositions.length);
+  for (let i = 0; i < geom.bindPositions.length; i += 1) {
+    const base = geom.bindPositions[i];
+    const delta = deltas && deltas[i];
+    const point = delta ? [base[0] + delta[0], base[1] + delta[1], base[2] + delta[2]] : base;
+    const influence = geom.influences && geom.influences[i];
+    if (!influence) {
+      out[i] = [point[0], point[1], point[2]];
+      continue;
+    }
+    const use = geom.rig.uses[influence.use];
+    const table = mats.get(influence.use);
+    const acc = [0, 0, 0];
+    let covered = 0;
+    for (let k = 0; k < 4; k += 1) {
+      const weight = influence.w[k] || 0;
+      if (!weight) continue;
+      const joint = influence.j[k] | 0;
+      if (!table || !table[joint]) continue;
+      const moved = mulPoint(table[joint], point);
+      acc[0] += moved[0] * weight;
+      acc[1] += moved[1] * weight;
+      acc[2] += moved[2] * weight;
+      covered += weight;
+    }
+    const skinned = covered ? acc : [point[0], point[1], point[2]];
+    out[i] = mulPoint(use.meshWorld, skinned);
+  }
+  return out;
+}
+
+function boneWorlds(geom, pose) {
+  const nodes = geom.rig.nodes;
+  const parent = geom.rig.parent;
+  const humanoid = geom.humanoid || {};
+  const override = new Map();
+  Object.keys(pose || {}).forEach((name) => {
+    const node = humanoid[name];
+    const quat = pose[name];
+    if (node != null && quat && quat.length === 4) override.set(node, quat);
+  });
+  const cache = new Array(nodes.length);
+  const walk = (index) => {
+    if (cache[index]) return cache[index];
+    const node = nodes[index] || { t: [0, 0, 0], r: [0, 0, 0, 1], s: [1, 1, 1], matrix: null };
+    let local;
+    if (override.has(index) || !node.matrix) local = nodeMatrix({ translation: node.t, rotation: override.get(index) || node.r, scale: node.s });
+    else local = node.matrix;
+    const above = parent[index];
+    cache[index] = above == null || above < 0 ? local : mul(walk(above), local);
+    return cache[index];
+  };
+  for (let index = 0; index < nodes.length; index += 1) walk(index);
+  return cache;
+}
+
+function markerPoints(geom) {
+  const worlds = geom._worlds || [];
+  const center = geom.bindCenter || [0, 0, 0];
+  return (geom.boneList || []).filter((bone) => bone.group !== "Hands" || bone.name === meshCamera.selected).map((bone) => {
+    const matrix = worlds[geom.humanoid[bone.name]] || identityMatrix();
+    return {
+      name: bone.name,
+      point: [matrix[12] - center[0], matrix[13] - center[1], matrix[14] - center[2]],
+    };
+  });
+}
+
+function gizmoLines(geom) {
+  if (!meshCamera.poseMode || !meshCamera.selected || !geom.humanoid) return [];
+  const node = geom.humanoid[meshCamera.selected];
+  const matrix = geom._worlds && geom._worlds[node];
+  if (!matrix) return [];
+  const center = geom.bindCenter || [0, 0, 0];
+  const origin = [matrix[12] - center[0], matrix[13] - center[1], matrix[14] - center[2]];
+  const len = Math.max((geom.half && geom.half[1]) || 0.2, 0.05) * 0.28;
+  return [
+    ["x", [matrix[0], matrix[1], matrix[2]], [0.95, 0.28, 0.24]],
+    ["y", [matrix[4], matrix[5], matrix[6]], [0.3, 0.82, 0.38]],
+    ["z", [matrix[8], matrix[9], matrix[10]], [0.28, 0.48, 0.95]],
+  ].map((item) => {
+    const dir = norm(item[1]);
+    return {
+      axis: item[0],
+      color: item[2],
+      a: origin,
+      b: [origin[0] + dir[0] * len, origin[1] + dir[1] * len, origin[2] + dir[2] * len],
+    };
+  });
+}
+
+function paintPose(ctx, canvas) {
+  if (!meshCamera.poseMode || !canvas._geom) return;
+  const geom = canvas._geom;
+  ctx.save();
+  for (const marker of geom.markers || []) {
+    const point = projectPoint(marker.point, canvas._orbit, canvas.width, canvas.height);
+    ctx.fillStyle = marker.name === meshCamera.selected ? "#ffd60a" : "#f2f2f7";
+    ctx.beginPath();
+    ctx.arc(point.x, point.y, marker.name === meshCamera.selected ? 5 : 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  for (const line of geom.gizmo || []) {
+    const a = projectPoint(line.a, canvas._orbit, canvas.width, canvas.height);
+    const b = projectPoint(line.b, canvas._orbit, canvas.width, canvas.height);
+    ctx.strokeStyle = `rgb(${Math.round(line.color[0] * 255)}, ${Math.round(line.color[1] * 255)}, ${Math.round(line.color[2] * 255)})`;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function paintPoseGl(gl, canvas) {
+  const geom = canvas._geom;
+  if (!meshCamera.poseMode || !geom) return;
+  const lines = [];
+  for (const marker of geom.markers || []) {
+    const s = Math.max((geom.half && geom.half[1]) || 0.2, 0.05) * 0.03;
+    const p = marker.point;
+    const color = marker.name === meshCamera.selected ? [1, 0.84, 0.04] : [0.95, 0.95, 0.97];
+    lines.push([[p[0] - s, p[1], p[2]], [p[0] + s, p[1], p[2]], color]);
+    lines.push([[p[0], p[1] - s, p[2]], [p[0], p[1] + s, p[2]], color]);
+  }
+  for (const line of geom.gizmo || []) lines.push([line.a, line.b, line.color]);
+  if (!lines.length) return;
+  gl.disable(gl.DEPTH_TEST);
+  gl.uniform1f(gl._line, 1);
+  gl.uniform1f(gl._tex, 0);
+  const groups = new Map();
+  for (const line of lines) {
+    const key = line[2].join(",");
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(line);
+  }
+  groups.forEach((group, key) => {
+    const color = key.split(",").map(Number);
+    const verts = new Float32Array(group.length * 6);
+    group.forEach((line, index) => {
+      const at = index * 6;
+      verts[at] = line[0][0]; verts[at + 1] = line[0][1]; verts[at + 2] = line[0][2];
+      verts[at + 3] = line[1][0]; verts[at + 4] = line[1][1]; verts[at + 5] = line[1][2];
+    });
+    const buffer = gl.createBuffer();
+    gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+    gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+    gl.uniform3f(gl._color, color[0], color[1], color[2]);
+    gl.enableVertexAttribArray(gl._pos);
+    gl.vertexAttribPointer(gl._pos, 3, gl.FLOAT, false, 12, 0);
+    if (gl._normal >= 0) gl.disableVertexAttribArray(gl._normal);
+    if (gl._uv >= 0) gl.disableVertexAttribArray(gl._uv);
+    gl.drawArrays(gl.LINES, 0, verts.length / 3);
+    gl.deleteBuffer(buffer);
+  });
+  gl.uniform1f(gl._line, 0);
+  gl.enable(gl.DEPTH_TEST);
+}
+
+function canvasPoint(canvas, event) {
+  const rect = canvas.getBoundingClientRect();
+  return {
+    x: (event.clientX - rect.left) * (canvas.width / Math.max(1, rect.width)),
+    y: (event.clientY - rect.top) * (canvas.height / Math.max(1, rect.height)),
+  };
+}
+
+function segmentDistance(point, a, b) {
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const len = abx * abx + aby * aby || 1;
+  let t = ((point.x - a.x) * abx + (point.y - a.y) * aby) / len;
+  t = Math.max(0, Math.min(1, t));
+  return Math.hypot(point.x - (a.x + abx * t), point.y - (a.y + aby * t));
+}
+
+function pickAxis(canvas, point) {
+  const geom = canvas._geom;
+  if (!geom || !geom.gizmo || !geom.gizmo.length) return null;
+  let best = null;
+  let bestDist = 14;
+  for (const line of geom.gizmo) {
+    const a = projectPoint(line.a, canvas._orbit, canvas.width, canvas.height);
+    const b = projectPoint(line.b, canvas._orbit, canvas.width, canvas.height);
+    const dist = segmentDistance(point, a, b);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = line.axis;
+    }
+  }
+  return best;
+}
+
+function pickBone(canvas, point) {
+  const geom = canvas._geom;
+  if (!geom || !geom.markers) return "";
+  let best = "";
+  let bestDist = 22;
+  for (const marker of geom.markers) {
+    const projected = projectPoint(marker.point, canvas._orbit, canvas.width, canvas.height);
+    const dist = Math.hypot(projected.x - point.x, projected.y - point.y);
+    if (dist < bestDist) {
+      bestDist = dist;
+      best = marker.name;
+    }
+  }
+  return best;
+}
+
+function rotateSelected(canvas, drag, dx) {
+  const name = meshCamera.selected;
+  const geom = canvas._geom;
+  if (!name || !geom || !geom.rig || !drag.axis) return;
+  const axis = drag.axis === "y" ? [0, 1, 0] : (drag.axis === "z" ? [0, 0, 1] : [1, 0, 0]);
+  const spun = mulQuat(drag.quat, quatFromAxis(axis, dx * 0.01));
+  meshCamera.pose = Object.assign({}, meshCamera.pose, { [name]: normalizeQuat(spun) });
+  applyPose(geom);
+  redraw(canvas);
+}
+
+function boneEuler(geom, name) {
+  if (!geom || !geom.rig || !geom.humanoid || geom.humanoid[name] == null) return { x: 0, y: 0, z: 0 };
+  const bind = geom.rig.nodes[geom.humanoid[name]].r;
+  const local = (meshCamera.pose && meshCamera.pose[name]) || bind;
+  const delta = mulQuat(invQuat(bind), local);
+  const euler = quatToEuler(normalizeQuat(delta));
+  return { x: Math.round(euler[0]), y: Math.round(euler[1]), z: Math.round(euler[2]) };
+}
+
+function setPoseAxis(axis, degrees) {
+  const canvas = document.querySelector("canvas[data-mesh-id]");
+  const geom = canvas && canvas._geom;
+  const name = meshCamera.selected;
+  if (!geom || !geom.rig || !name || geom.humanoid[name] == null) return;
+  const bind = geom.rig.nodes[geom.humanoid[name]].r;
+  const euler = boneEuler(geom, name);
+  euler[axis] = Number(degrees) || 0;
+  meshCamera.pose = Object.assign({}, meshCamera.pose, { [name]: normalizeQuat(mulQuat(bind, eulerQuat(euler.x, euler.y, euler.z))) });
+  applyPose(geom);
+  redraw(canvas);
+}
+
+function refreshMeshPose() {
+  const canvas = document.querySelector("canvas[data-mesh-id]");
+  if (!canvas || !canvas._geom) return;
+  if (canvas._geom.rig) applyPose(canvas._geom);
+  else poseGeometry(canvas._geom);
+  redraw(canvas);
+}
+
+function applyPosePreset(name) {
+  const canvas = document.querySelector("canvas[data-mesh-id]");
+  const geom = canvas && canvas._geom;
+  if (!geom || !geom.rig) return {};
+  meshCamera.pose = !name || name === "bind" ? {} : buildPreset(geom, name);
+  applyPose(geom);
+  redraw(canvas);
+  return meshCamera.pose;
+}
+
+function meshPoseInfo() {
+  const canvas = document.querySelector("canvas[data-mesh-id]");
+  const geom = canvas && canvas._geom;
+  if (!geom) return null;
+  let minX = Infinity; let maxX = -Infinity; let minY = Infinity; let maxY = -Infinity;
+  for (const point of geom.positions) {
+    minX = Math.min(minX, point[0]); maxX = Math.max(maxX, point[0]);
+    minY = Math.min(minY, point[1]); maxY = Math.max(maxY, point[1]);
+  }
+  return {
+    rig: Boolean(geom.rig),
+    bones: (geom.boneList || []).length,
+    pose: Object.keys(meshCamera.pose || {}).length,
+    shape: meshCamera.shape || "",
+    selected: meshCamera.selected || "",
+    poseMode: Boolean(meshCamera.poseMode),
+    minX, maxX, minY, maxY,
+    ready: canvas.dataset.ready || "",
+  };
+}
+
+window.boneEuler = boneEuler;
+window.setPoseAxis = setPoseAxis;
+window.refreshMeshPose = refreshMeshPose;
+window.applyPosePreset = applyPosePreset;
+window.meshPoseInfo = meshPoseInfo;
+
+const POSE_ORDER = [
+  "hips", "spine", "chest", "upperChest", "neck", "head",
+  "leftShoulder", "leftUpperArm", "leftLowerArm", "leftHand",
+  "rightShoulder", "rightUpperArm", "rightLowerArm", "rightHand",
+  "leftUpperLeg", "leftLowerLeg", "leftFoot",
+  "rightUpperLeg", "rightLowerLeg", "rightFoot",
+];
+
+const CHILD_CHAIN = {
+  hips: ["spine", "chest", "upperChest", "neck", "head"],
+  spine: ["chest", "upperChest", "neck", "head"],
+  chest: ["upperChest", "neck", "head"],
+  upperChest: ["neck", "head"],
+  neck: ["head"],
+  leftShoulder: ["leftUpperArm", "leftLowerArm", "leftHand"],
+  leftUpperArm: ["leftLowerArm", "leftHand"],
+  leftLowerArm: ["leftHand"],
+  rightShoulder: ["rightUpperArm", "rightLowerArm", "rightHand"],
+  rightUpperArm: ["rightLowerArm", "rightHand"],
+  rightLowerArm: ["rightHand"],
+  leftUpperLeg: ["leftLowerLeg", "leftFoot", "leftToes"],
+  leftLowerLeg: ["leftFoot", "leftToes"],
+  leftFoot: ["leftToes"],
+  rightUpperLeg: ["rightLowerLeg", "rightFoot", "rightToes"],
+  rightLowerLeg: ["rightFoot", "rightToes"],
+  rightFoot: ["rightToes"],
+};
+
+function mix(axes, parts) {
+  const acc = [0, 0, 0];
+  for (const part of parts) {
+    const axis = axes[part[0]];
+    acc[0] += axis[0] * part[1];
+    acc[1] += axis[1] * part[1];
+    acc[2] += axis[2] * part[1];
+  }
+  return norm(acc);
+}
+
+function presetTargets(name) {
+  const down = (axes) => mix(axes, [["up", -1]]);
+  const table = {
+    relaxed: {
+      leftUpperArm: (axes) => mix(axes, [["up", -0.92], ["right", -0.28], ["forward", 0.18]]),
+      rightUpperArm: (axes) => mix(axes, [["up", -0.92], ["right", 0.28], ["forward", 0.18]]),
+      leftLowerArm: (axes) => mix(axes, [["up", -0.78], ["right", -0.1], ["forward", 0.5]]),
+      rightLowerArm: (axes) => mix(axes, [["up", -0.78], ["right", 0.1], ["forward", 0.5]]),
+      leftUpperLeg: down, rightUpperLeg: down, leftLowerLeg: down, rightLowerLeg: down,
+    },
+    walk: {
+      leftUpperLeg: (axes) => mix(axes, [["up", -0.7], ["forward", 0.7]]),
+      rightUpperLeg: (axes) => mix(axes, [["up", -0.78], ["forward", -0.58]]),
+      leftLowerLeg: (axes) => mix(axes, [["up", -0.92], ["forward", -0.25]]),
+      rightLowerLeg: down,
+      leftUpperArm: (axes) => mix(axes, [["up", -0.72], ["forward", -0.58], ["right", -0.22]]),
+      rightUpperArm: (axes) => mix(axes, [["up", -0.68], ["forward", 0.62], ["right", 0.22]]),
+      leftLowerArm: (axes) => mix(axes, [["up", -0.7], ["forward", -0.2]]),
+      rightLowerArm: (axes) => mix(axes, [["up", -0.45], ["forward", 0.75]]),
+    },
+    run: {
+      spine: (axes) => mix(axes, [["up", 0.84], ["forward", 0.54]]),
+      chest: (axes) => mix(axes, [["up", 0.8], ["forward", 0.6]]),
+      leftUpperLeg: (axes) => mix(axes, [["up", -0.35], ["forward", 0.92]]),
+      rightUpperLeg: (axes) => mix(axes, [["up", -0.55], ["forward", -0.8]]),
+      leftLowerLeg: (axes) => mix(axes, [["up", -0.45], ["forward", -0.85]]),
+      rightLowerLeg: (axes) => mix(axes, [["up", -0.95], ["forward", 0.15]]),
+      leftUpperArm: (axes) => mix(axes, [["up", -0.35], ["forward", -0.85], ["right", -0.2]]),
+      rightUpperArm: (axes) => mix(axes, [["up", -0.2], ["forward", 0.9], ["right", 0.25]]),
+      leftLowerArm: (axes) => mix(axes, [["up", -0.2], ["forward", -0.55]]),
+      rightLowerArm: (axes) => mix(axes, [["up", 0.15], ["forward", 0.85]]),
+    },
+    sit: {
+      spine: (axes) => mix(axes, [["up", 0.94], ["forward", 0.28]]),
+      leftUpperLeg: (axes) => mix(axes, [["forward", 0.96], ["up", -0.18]]),
+      rightUpperLeg: (axes) => mix(axes, [["forward", 0.96], ["up", -0.18]]),
+      leftLowerLeg: down, rightLowerLeg: down,
+      leftUpperArm: (axes) => mix(axes, [["up", -0.85], ["forward", 0.35], ["right", -0.25]]),
+      rightUpperArm: (axes) => mix(axes, [["up", -0.85], ["forward", 0.35], ["right", 0.25]]),
+      leftLowerArm: (axes) => mix(axes, [["forward", 0.9], ["up", -0.15], ["right", -0.2]]),
+      rightLowerArm: (axes) => mix(axes, [["forward", 0.9], ["up", -0.15], ["right", 0.2]]),
+    },
+    point: {
+      rightUpperArm: (axes) => mix(axes, [["forward", 0.82], ["up", 0.2], ["right", 0.4]]),
+      rightLowerArm: (axes) => mix(axes, [["forward", 0.96], ["up", 0.12], ["right", 0.15]]),
+      leftUpperArm: (axes) => mix(axes, [["up", -0.9], ["right", -0.3], ["forward", 0.12]]),
+      leftLowerArm: (axes) => mix(axes, [["up", -0.75], ["forward", 0.45]]),
+      head: (axes) => mix(axes, [["up", 0.96], ["right", 0.22], ["forward", 0.12]]),
+    },
+    cross: {
+      leftUpperArm: (axes) => mix(axes, [["right", 0.72], ["forward", 0.55], ["up", -0.2]]),
+      rightUpperArm: (axes) => mix(axes, [["right", -0.72], ["forward", 0.55], ["up", -0.2]]),
+      leftLowerArm: (axes) => mix(axes, [["right", 0.9], ["up", 0.12], ["forward", 0.2]]),
+      rightLowerArm: (axes) => mix(axes, [["right", -0.9], ["up", 0.12], ["forward", 0.2]]),
+    },
+    fight: {
+      spine: (axes) => mix(axes, [["up", 0.9], ["forward", 0.35]]),
+      leftUpperLeg: (axes) => mix(axes, [["up", -0.5], ["forward", 0.82]]),
+      rightUpperLeg: (axes) => mix(axes, [["up", -0.72], ["forward", -0.5]]),
+      leftLowerLeg: down, rightLowerLeg: down,
+      leftUpperArm: (axes) => mix(axes, [["forward", 0.7], ["up", 0.2], ["right", -0.5]]),
+      rightUpperArm: (axes) => mix(axes, [["forward", 0.5], ["up", 0.35], ["right", 0.7]]),
+      leftLowerArm: (axes) => mix(axes, [["up", 0.78], ["forward", 0.5]]),
+      rightLowerArm: (axes) => mix(axes, [["up", 0.82], ["forward", 0.4]]),
+    },
+  };
+  return table[name] || null;
+}
+
+function buildPreset(geom, name) {
+  const targets = presetTargets(name);
+  if (!targets) return {};
+  const bindWorlds = boneWorlds(geom, {});
+  const axes = modelAxes(geom, bindWorlds);
+  const pose = {};
+  for (const bone of POSE_ORDER) {
+    if (geom.humanoid[bone] == null || !targets[bone]) continue;
+    const node = geom.humanoid[bone];
+    const childName = (CHILD_CHAIN[bone] || []).find((item) => geom.humanoid[item] != null);
+    const dir = boneDirection(geom, bindWorlds, bone, childName);
+    if (!dir) continue;
+    const localDir = rotateVec(invQuat(quatFromMatrix(bindWorlds[node])), dir);
+    const worlds = boneWorlds(geom, pose);
+    const parent = geom.rig.parent[node];
+    const parentRot = parent != null && parent >= 0 ? quatFromMatrix(worlds[parent]) : [0, 0, 0, 1];
+    const worldRot = mulQuat(parentRot, geom.rig.nodes[node].r);
+    const worldDir = rotateVec(worldRot, localDir);
+    const delta = quatFromTo(worldDir, targets[bone](axes));
+    pose[bone] = normalizeQuat(mulQuat(invQuat(parentRot), mulQuat(delta, worldRot)));
+  }
+  return pose;
+}
+
+function modelAxes(geom, worlds) {
+  const pos = (name) => (geom.humanoid[name] == null ? null : [worlds[geom.humanoid[name]][12], worlds[geom.humanoid[name]][13], worlds[geom.humanoid[name]][14]]);
+  const hips = pos("hips");
+  const head = pos("head") || pos("neck") || pos("chest") || pos("spine");
+  let up = hips && head ? norm(subVec(head, hips)) : [0, 1, 0];
+  const left = pos("leftUpperArm") || pos("leftShoulder") || pos("leftUpperLeg");
+  const right = pos("rightUpperArm") || pos("rightShoulder") || pos("rightUpperLeg");
+  let rightDir = left && right ? subVec(right, left) : [1, 0, 0];
+  rightDir = subVec(rightDir, scaleVec(up, dot(rightDir, up)));
+  rightDir = Math.hypot(rightDir[0], rightDir[1], rightDir[2]) < 1e-4 ? [1, 0, 0] : norm(rightDir);
+  return { up, right: rightDir, forward: norm(cross(rightDir, up)) };
+}
+
+function boneDirection(geom, worlds, name, childName) {
+  const node = geom.humanoid[name];
+  const from = [worlds[node][12], worlds[node][13], worlds[node][14]];
+  let to = null;
+  if (childName && geom.humanoid[childName] != null) {
+    const child = geom.humanoid[childName];
+    to = [worlds[child][12], worlds[child][13], worlds[child][14]];
+  } else {
+    const child = geom.rig.parent.findIndex((parent) => parent === node);
+    if (child >= 0) to = [worlds[child][12], worlds[child][13], worlds[child][14]];
+  }
+  if (!to) return null;
+  const delta = subVec(to, from);
+  if (Math.hypot(delta[0], delta[1], delta[2]) < 1e-5) return null;
+  return norm(delta);
+}
+
+function subVec(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function scaleVec(a, scale) { return [a[0] * scale, a[1] * scale, a[2] * scale]; }
+
+function mulQuat(a, b) {
+  return [
+    a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1],
+    a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0],
+    a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3],
+    a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2],
+  ];
+}
+
+function invQuat(q) {
+  return normalizeQuat([-q[0], -q[1], -q[2], q[3]]);
+}
+
+function normalizeQuat(q) {
+  const length = Math.hypot(q[0], q[1], q[2], q[3]) || 1;
+  return [q[0] / length, q[1] / length, q[2] / length, q[3] / length];
+}
+
+function quatFromAxis(axis, radians) {
+  const half = radians / 2;
+  const scale = Math.sin(half);
+  return [axis[0] * scale, axis[1] * scale, axis[2] * scale, Math.cos(half)];
+}
+
+function quatFromTo(from, to) {
+  const a = norm(from);
+  const b = norm(to);
+  const same = dot(a, b);
+  if (same > 0.9999) return [0, 0, 0, 1];
+  if (same < -0.9999) {
+    let axis = cross(a, [1, 0, 0]);
+    if (Math.hypot(axis[0], axis[1], axis[2]) < 1e-4) axis = cross(a, [0, 1, 0]);
+    return quatFromAxis(norm(axis), Math.PI);
+  }
+  const turned = cross(a, b);
+  return normalizeQuat([turned[0], turned[1], turned[2], 1 + same]);
+}
+
+function rotateVec(q, v) {
+  const spun = mulQuat(mulQuat(q, [v[0], v[1], v[2], 0]), invQuat(q));
+  return [spun[0], spun[1], spun[2]];
+}
+
+function quatFromMatrix(matrix) {
+  const x = norm([matrix[0], matrix[1], matrix[2]]);
+  let y = [matrix[4], matrix[5], matrix[6]];
+  let z = norm(cross(x, y));
+  y = norm(cross(z, x));
+  const m00 = x[0]; const m10 = x[1]; const m20 = x[2];
+  const m01 = y[0]; const m11 = y[1]; const m21 = y[2];
+  const m02 = z[0]; const m12 = z[1]; const m22 = z[2];
+  const trace = m00 + m11 + m22;
+  let q;
+  if (trace > 0) {
+    const s = Math.sqrt(trace + 1) * 2;
+    q = [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s];
+  } else if (m00 > m11 && m00 > m22) {
+    const s = Math.sqrt(1 + m00 - m11 - m22) * 2;
+    q = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s];
+  } else if (m11 > m22) {
+    const s = Math.sqrt(1 + m11 - m00 - m22) * 2;
+    q = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s];
+  } else {
+    const s = Math.sqrt(1 + m22 - m00 - m11) * 2;
+    q = [(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s];
+  }
+  return normalizeQuat(q);
+}
+
+function eulerQuat(x, y, z) {
+  const qx = quatFromAxis([1, 0, 0], x * Math.PI / 180);
+  const qy = quatFromAxis([0, 1, 0], y * Math.PI / 180);
+  const qz = quatFromAxis([0, 0, 1], z * Math.PI / 180);
+  return mulQuat(mulQuat(qz, qy), qx);
+}
+
+function quatToEuler(q) {
+  const matrix = nodeMatrix({ rotation: q });
+  const sy = Math.max(-1, Math.min(1, -matrix[2]));
+  const pitch = Math.asin(sy);
+  const cy = Math.cos(pitch);
+  let roll;
+  let yaw;
+  if (Math.abs(cy) > 1e-4) {
+    roll = Math.atan2(matrix[6], matrix[10]);
+    yaw = Math.atan2(matrix[1], matrix[0]);
+  } else {
+    roll = Math.atan2(-matrix[9], matrix[5]);
+    yaw = 0;
+  }
+  return [roll * 180 / Math.PI, pitch * 180 / Math.PI, yaw * 180 / Math.PI];
 }

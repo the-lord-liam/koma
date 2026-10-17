@@ -1481,6 +1481,160 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(Path(pose_path).exists())
         self.assertFalse(Path(panel_path).exists())
 
+    def test_pose_skin_names_and_saved_poses(self):
+        import math
+
+        from koma.mesh import (
+            _assemble,
+            _chunks,
+            _invert_matrix,
+            _mul_matrix,
+            _node_matrix,
+            cube_glb,
+            humanoid_from_names,
+            joint_matrix,
+            skin_points,
+        )
+
+        document, blob = _chunks(cube_glb())
+        document["nodes"] = [
+            {"translation": [0, 2, 0], "children": [1]},
+            {"mesh": 0, "translation": [0, 3, 0]},
+            {"name": "J_Bip_L_UpperArm", "rotation": [0, 0, 0.70710678, 0.70710678]},
+        ]
+        baked_doc, _baked_blob = _chunks(_assemble(document, blob))
+        # load_model_file bakes. Call the same path the importer uses.
+        from koma.mesh import load_model_file
+
+        folder = Path(self.tmp.name) / "pose"
+        folder.mkdir()
+        source = folder / "arm.glb"
+        source.write_bytes(_assemble(document, blob))
+        loaded = load_model_file(source)
+        baked_doc, baked_blob = _chunks(loaded)
+        self.assertNotIn("translation", baked_doc["nodes"][0])
+        self.assertNotIn("translation", baked_doc["nodes"][1])
+        self.assertIn("rotation", baked_doc["nodes"][2])
+        self.assertGreater(min(point[1] for point in parse_positions(loaded)), 4)
+
+        skinned = _chunks(cube_glb())[0]
+        skinned["nodes"] = [
+            {"name": "hips", "translation": [0, 1, 0], "rotation": [0, 0.2, 0, 0.98]},
+            {"mesh": 0, "skin": 0, "translation": [0, 0.5, 0]},
+        ]
+        skinned["skins"] = [{"joints": [0], "skeleton": 0}]
+        skinned_path = folder / "skinned.glb"
+        skinned_path.write_bytes(_assemble(skinned, _chunks(cube_glb())[1]))
+        kept = _chunks(load_model_file(skinned_path))[0]
+        self.assertIn("rotation", kept["nodes"][0])
+        self.assertEqual(kept["nodes"][1]["translation"], [0, 0.5, 0])
+
+        mixamo = humanoid_from_names([
+            (0, "mixamorig:Hips", None),
+            (1, "mixamorig:Spine", 0),
+            (2, "mixamorig:Spine1", 1),
+            (3, "mixamorig:LeftUpLeg", 0),
+            (4, "mixamorig:LeftLeg", 3),
+            (5, "mixamorig:LeftFoot", 4),
+            (6, "mixamorig:LeftArm", 1),
+            (7, "mixamorig:LeftForeArm", 6),
+            (8, "mixamorig:LeftHand", 7),
+            (9, "mixamorig:RightArm", 1),
+            (10, "mixamorig:RightForeArm", 9),
+            (11, "mixamorig:RightHand", 10),
+        ])
+        self.assertEqual(mixamo["hips"], 0)
+        self.assertEqual(mixamo["spine"], 1)
+        self.assertEqual(mixamo["chest"], 2)
+        self.assertEqual(mixamo["leftUpperLeg"], 3)
+        self.assertEqual(mixamo["leftLowerLeg"], 4)
+        self.assertEqual(mixamo["leftUpperArm"], 6)
+        self.assertEqual(mixamo["leftLowerArm"], 7)
+        self.assertEqual(mixamo["leftHand"], 8)
+        self.assertEqual(mixamo["rightUpperArm"], 9)
+
+        cesium = humanoid_from_names([
+            (3, "Skeleton_torso_joint_1", None),
+            (12, "Skeleton_torso_joint_2", 3),
+            (13, "torso_joint_3", 12),
+            (20, "Skeleton_neck_joint_1", 13),
+            (21, "Skeleton_neck_joint_2", 20),
+            (17, "Skeleton_arm_joint_L__4_", 13),
+            (18, "Skeleton_arm_joint_L__3_", 17),
+            (19, "Skeleton_arm_joint_L__2_", 18),
+            (14, "Skeleton_arm_joint_R", 13),
+            (15, "Skeleton_arm_joint_R__2_", 14),
+            (16, "Skeleton_arm_joint_R__3_", 15),
+            (8, "leg_joint_L_1", 3),
+            (9, "leg_joint_L_2", 8),
+            (10, "leg_joint_L_3", 9),
+            (11, "leg_joint_L_5", 10),
+            (4, "leg_joint_R_1", 3),
+        ])
+        self.assertEqual(cesium["hips"], 3)
+        self.assertEqual(cesium["spine"], 12)
+        self.assertEqual(cesium["chest"], 13)
+        self.assertEqual(cesium["neck"], 20)
+        self.assertEqual(cesium["head"], 21)
+        self.assertEqual(cesium["leftUpperArm"], 17)
+        self.assertEqual(cesium["leftLowerArm"], 18)
+        self.assertEqual(cesium["leftHand"], 19)
+        self.assertEqual(cesium["rightUpperArm"], 14)
+        self.assertEqual(cesium["rightLowerArm"], 15)
+        self.assertEqual(cesium["rightHand"], 16)
+        self.assertEqual(cesium["leftUpperLeg"], 8)
+        self.assertEqual(cesium["leftLowerLeg"], 9)
+        self.assertEqual(cesium["leftFoot"], 10)
+        self.assertEqual(cesium["leftToes"], 11)
+
+        identity = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]
+        turn = _node_matrix({"rotation": [0, 0, math.sin(math.pi / 4), math.cos(math.pi / 4)]})
+        moved = skin_points([(1.0, 0.0, 0.0)], [(0, 0, 0, 0)], [(1.0, 0.0, 0.0, 0.0)], [turn])
+        self.assertAlmostEqual(moved[0][0], 0.0, places=5)
+        self.assertAlmostEqual(moved[0][1], 1.0, places=5)
+        mesh = _node_matrix({"translation": [4, 0, 0]})
+        joint = _node_matrix({"translation": [4, 2, 0]})
+        inverse_bind = _mul_matrix(_invert_matrix(joint), mesh)
+        self.assertLess(max(abs(value - identity[index]) for index, value in enumerate(joint_matrix(mesh, joint, inverse_bind))), 1e-5)
+
+        created = self.studio.project_create({"title": "Poses", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        made = self.studio.character_create({"projectId": project_id, "name": "Aki"})
+        character_id = made["tree"]["characters"][-1]["id"]
+        with self.assertRaises(ValueError):
+            self.studio.character_pose_save({"id": character_id, "name": "  ", "rotations": {}})
+        with self.assertRaises(ValueError):
+            self.studio.character_pose_save({"id": character_id, "name": "Wave", "rotations": {"leftHand": [0, 0, 0, 0]}})
+        saved = self.studio.character_pose_save({
+            "id": character_id,
+            "name": "Wave",
+            "shape": "Joy",
+            "rotations": {"leftUpperArm": [0, 0, 0.70710678, 0.70710678]},
+        })
+        pose = saved["tree"]["characters"][-1]["poses"][0]
+        self.assertEqual(pose["name"], "Wave")
+        self.assertEqual(pose["shape"], "Joy")
+        self.assertAlmostEqual(sum(value * value for value in pose["rotations"]["leftUpperArm"]), 1.0, places=5)
+        again = self.studio.character_pose_save({
+            "id": character_id,
+            "name": "Wave",
+            "shape": "",
+            "rotations": {"leftUpperArm": [0, 0, 0, 1]},
+        })
+        poses = again["tree"]["characters"][-1]["poses"]
+        self.assertEqual(len(poses), 1)
+        self.assertEqual(poses[0]["id"], pose["id"])
+        self.assertEqual(poses[0]["rotations"]["leftUpperArm"], [0, 0, 0, 1])
+        self.studio.character_pose_delete({"id": pose["id"]})
+        self.assertEqual(self.store.list_poses(character_id), [])
+        self.studio.character_pose_save({
+            "id": character_id,
+            "name": "Sit",
+            "rotations": {"leftUpperLeg": [0.2, 0, 0, 0.98]},
+        })
+        self.studio.character_delete({"id": character_id})
+        self.assertEqual(self.store.list_poses(character_id), [])
+
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
 
