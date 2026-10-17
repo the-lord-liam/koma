@@ -114,10 +114,48 @@ function readScalar(document, bin, index) {
   return values;
 }
 
+const meshCamera = {
+  meshId: "",
+  yaw: 0.7,
+  pitch: 0.42,
+  roll: 0,
+  dist: 3.2,
+  baseDist: 3.2,
+  panX: 0,
+  panY: 0,
+  auto: false,
+  wire: false,
+  light: true,
+  large: false,
+};
+let meshSpin = 0;
+
+function resetMeshCamera() {
+  meshCamera.yaw = 0.7;
+  meshCamera.pitch = 0.42;
+  meshCamera.roll = 0;
+  meshCamera.dist = meshCamera.baseDist || 3.2;
+  meshCamera.panX = 0;
+  meshCamera.panY = 0;
+}
+
+function meshFlags() {
+  return { auto: meshCamera.auto, wire: meshCamera.wire, light: meshCamera.light, large: meshCamera.large };
+}
+
 function showMesh(canvas, geom) {
+  const id = canvas.dataset.meshId || "";
+  centerGeometry(geom);
+  const radius = frameRadius(geom);
+  if (meshCamera.meshId !== id) {
+    meshCamera.meshId = id;
+    meshCamera.baseDist = Math.max(1.4, radius * 2.8);
+    resetMeshCamera();
+  }
   canvas._geom = geom;
-  canvas._orbit = { yaw: 0.7, pitch: 0.42, dist: 3.2 };
+  canvas._orbit = meshCamera;
   bindOrbit(canvas);
+  ensureSpin();
   const triangles = geom.indices.length / 3;
   const gl = triangles > 12000 ? canvas.getContext("webgl", { preserveDrawingBuffer: true, antialias: true }) : null;
   if (gl && glProgram(gl)) {
@@ -130,21 +168,58 @@ function showMesh(canvas, geom) {
   requestAnimationFrame(() => redraw(canvas));
 }
 
+function centerGeometry(geom) {
+  let cx = 0;
+  let cy = 0;
+  let cz = 0;
+  for (const point of geom.positions) {
+    cx += point[0];
+    cy += point[1];
+    cz += point[2];
+  }
+  const count = geom.positions.length || 1;
+  cx /= count;
+  cy /= count;
+  cz /= count;
+  geom.positions = geom.positions.map((point) => [point[0] - cx, point[1] - cy, point[2] - cz]);
+}
+
+function frameRadius(geom) {
+  let radius = 0.001;
+  for (const point of geom.positions) radius = Math.max(radius, Math.hypot(point[0], point[1], point[2]));
+  return radius;
+}
+
 function bindOrbit(canvas) {
+  canvas.addEventListener("contextmenu", (event) => event.preventDefault());
   canvas.addEventListener("pointerdown", (event) => {
+    const mode = event.button === 2 || event.shiftKey ? "pan" : (event.button === 1 || event.altKey ? "roll" : "orbit");
     canvas._drag = {
       x: event.clientX,
       y: event.clientY,
-      yaw: canvas._orbit.yaw,
-      pitch: canvas._orbit.pitch,
+      mode,
+      yaw: meshCamera.yaw,
+      pitch: meshCamera.pitch,
+      roll: meshCamera.roll,
+      panX: meshCamera.panX,
+      panY: meshCamera.panY,
     };
     try { canvas.setPointerCapture(event.pointerId); } catch (_error) { /* already gone */ }
   });
   canvas.addEventListener("pointermove", (event) => {
-    if (!canvas._drag) return;
-    canvas._orbit.yaw = canvas._drag.yaw + (event.clientX - canvas._drag.x) * 0.01;
-    const pitch = canvas._drag.pitch + (event.clientY - canvas._drag.y) * 0.01;
-    canvas._orbit.pitch = Math.max(-1.2, Math.min(1.2, pitch));
+    const drag = canvas._drag;
+    if (!drag) return;
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (drag.mode === "pan") {
+      meshCamera.panX = drag.panX + dx;
+      meshCamera.panY = drag.panY + dy;
+    } else if (drag.mode === "roll") {
+      meshCamera.roll = drag.roll + dx * 0.01;
+    } else {
+      meshCamera.yaw = drag.yaw + dx * 0.01;
+      meshCamera.pitch = drag.pitch + dy * 0.01;
+    }
     redraw(canvas);
   });
   const end = () => { canvas._drag = null; };
@@ -152,10 +227,25 @@ function bindOrbit(canvas) {
   canvas.addEventListener("pointercancel", end);
   canvas.addEventListener("wheel", (event) => {
     event.preventDefault();
-    const step = event.deltaY > 0 ? 0.28 : -0.28;
-    canvas._orbit.dist = Math.max(1.5, Math.min(9, canvas._orbit.dist + step));
+    const factor = event.deltaY > 0 ? 1.08 : 0.92;
+    const near = Math.max(0.2, meshCamera.baseDist * 0.12);
+    const far = Math.max(near + 0.5, meshCamera.baseDist * 10);
+    meshCamera.dist = Math.max(near, Math.min(far, meshCamera.dist * factor));
     redraw(canvas);
   }, { passive: false });
+}
+
+function ensureSpin() {
+  if (meshSpin) return;
+  const tick = () => {
+    meshSpin = requestAnimationFrame(tick);
+    if (!meshCamera.auto) return;
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    if (!canvas || canvas._drag || !canvas._geom) return;
+    meshCamera.yaw += 0.012;
+    redraw(canvas);
+  };
+  meshSpin = requestAnimationFrame(tick);
 }
 
 function redraw(canvas) {
@@ -169,6 +259,7 @@ function redraw(canvas) {
     canvas.height = height;
     if (canvas._gl) {
       canvas._gl._buffer = null;
+      canvas._gl._lines = null;
       canvas._gl._program = null;
       glProgram(canvas._gl);
     }
@@ -212,24 +303,22 @@ function rotatePoint(point, orbit) {
   const z1 = -point[0] * sy + point[2] * cy;
   const cp = Math.cos(orbit.pitch);
   const sp = Math.sin(orbit.pitch);
-  return [x1, point[1] * cp - z1 * sp, point[1] * sp + z1 * cp];
+  const y2 = point[1] * cp - z1 * sp;
+  const z2 = point[1] * sp + z1 * cp;
+  const cr = Math.cos(orbit.roll || 0);
+  const sr = Math.sin(orbit.roll || 0);
+  return [x1 * cr - y2 * sr, x1 * sr + y2 * cr, z2];
 }
 
 function projectPoint(point, orbit, width, height) {
-  let x = point[0];
-  let y = point[1];
-  let z = point[2];
-  const cy = Math.cos(orbit.yaw);
-  const sy = Math.sin(orbit.yaw);
-  const x1 = x * cy + z * sy;
-  const z1 = -x * sy + z * cy;
-  const cp = Math.cos(orbit.pitch);
-  const sp = Math.sin(orbit.pitch);
-  const y2 = y * cp - z1 * sp;
-  const z2 = y * sp + z1 * cp;
-  const depth = z2 + orbit.dist;
+  const rotated = rotatePoint(point, orbit);
+  const depth = rotated[2] + orbit.dist;
   const scale = (Math.min(width, height) * 0.72) / Math.max(0.2, depth);
-  return { x: width / 2 + x1 * scale, y: height / 2 - y2 * scale, z: z2 };
+  return {
+    x: width / 2 + rotated[0] * scale + (orbit.panX || 0),
+    y: height / 2 - rotated[1] * scale + (orbit.panY || 0),
+    z: rotated[2],
+  };
 }
 
 function drawCanvas(canvas) {
@@ -253,33 +342,45 @@ function drawCanvas(canvas) {
     faces.push({ a, b, c, z: (a.z + b.z + c.z) / 3, light });
   }
   faces.sort((left, right) => left.z - right.z);
+  const lit = meshCamera.light;
+  const wire = meshCamera.wire;
   for (const face of faces) {
-    const shade = Math.round(40 + 186 * face.light);
     ctx.beginPath();
     ctx.moveTo(face.a.x, face.a.y);
     ctx.lineTo(face.b.x, face.b.y);
     ctx.lineTo(face.c.x, face.c.y);
     ctx.closePath();
-    ctx.fillStyle = `rgb(${shade}, ${Math.round(shade * 0.28)}, ${Math.round(shade * 0.22)})`;
-    ctx.fill();
+    if (!wire || lit) {
+      const shade = lit ? Math.round(40 + 186 * face.light) : 214;
+      ctx.fillStyle = `rgb(${shade}, ${Math.round(shade * 0.28)}, ${Math.round(shade * 0.22)})`;
+      ctx.fill();
+    }
+    if (wire) {
+      ctx.strokeStyle = lit ? "rgba(255,255,255,0.9)" : "#f2f2f7";
+      ctx.lineWidth = 1.25;
+      ctx.stroke();
+    }
   }
 }
 
 function glProgram(gl) {
   const vs = `
     attribute vec3 aPos;
+    attribute vec3 aNormal;
     uniform mat4 uMvp;
-    varying vec3 vPos;
+    uniform mat4 uModel;
+    varying vec3 vNormal;
     void main() {
-      vPos = aPos;
+      vNormal = mat3(uModel) * aNormal;
       gl_Position = uMvp * vec4(aPos, 1.0);
     }
   `;
   const fs = `
     precision mediump float;
-    varying vec3 vPos;
+    uniform float uLight;
+    varying vec3 vNormal;
     void main() {
-      float shade = clamp(0.35 + vPos.y * 0.35 + vPos.x * 0.15, 0.25, 1.0);
+      float shade = uLight > 0.5 ? clamp(abs(vNormal.z) * 0.75 + 0.28, 0.28, 1.0) : 0.86;
       gl_FragColor = vec4(shade, shade * 0.28, shade * 0.22, 1.0);
     }
   `;
@@ -287,7 +388,10 @@ function glProgram(gl) {
   if (!program) return false;
   gl._program = program;
   gl._pos = gl.getAttribLocation(program, "aPos");
+  gl._normal = gl.getAttribLocation(program, "aNormal");
   gl._mvp = gl.getUniformLocation(program, "uMvp");
+  gl._model = gl.getUniformLocation(program, "uModel");
+  gl._light = gl.getUniformLocation(program, "uLight");
   return true;
 }
 
@@ -313,32 +417,86 @@ function drawGl(canvas) {
   gl.clearColor(0.165, 0.165, 0.173, 1);
   gl.enable(gl.DEPTH_TEST);
   gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
-  if (!gl._buffer) {
-    const data = new Float32Array(geom.indices.length * 3);
-    for (let i = 0; i < geom.indices.length; i += 1) {
-      const point = geom.positions[geom.indices[i]];
-      data[i * 3] = point[0];
-      data[i * 3 + 1] = point[1];
-      data[i * 3 + 2] = point[2];
-    }
-    gl._count = geom.indices.length;
-    gl._buffer = gl.createBuffer();
-    gl.bindBuffer(gl.ARRAY_BUFFER, gl._buffer);
-    gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW);
-  }
+  if (!gl._buffer) buildGlBuffers(gl, geom);
+  const orbit = canvas._orbit;
+  const model = modelMatrix(orbit);
+  const span = Math.min(canvas.width, canvas.height) * 0.72 || 1;
+  const panX = (orbit.panX || 0) * orbit.dist / span;
+  const panY = -((orbit.panY || 0) * orbit.dist / span);
+  const view = mul(translate(panX, panY, 0), lookAt([0, 0, orbit.dist], [0, 0, 0], [0, 1, 0]));
+  const projection = perspective(0.7, canvas.width / canvas.height, 0.05, Math.max(80, orbit.dist * 20));
   gl.useProgram(gl._program);
-  gl.bindBuffer(gl.ARRAY_BUFFER, gl._buffer);
-  gl.enableVertexAttribArray(gl._pos);
-  gl.vertexAttribPointer(gl._pos, 3, gl.FLOAT, false, 12, 0);
-  gl.uniformMatrix4fv(gl._mvp, false, new Float32Array(mvp(canvas._orbit, canvas.width / canvas.height)));
-  gl.drawArrays(gl.TRIANGLES, 0, gl._count);
+  gl.uniformMatrix4fv(gl._model, false, new Float32Array(model));
+  gl.uniformMatrix4fv(gl._mvp, false, new Float32Array(mul(projection, mul(view, model))));
+  gl.uniform1f(gl._light, meshCamera.light ? 1 : 0);
+  if (!meshCamera.wire || meshCamera.light) {
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl._buffer);
+    gl.enableVertexAttribArray(gl._pos);
+    gl.vertexAttribPointer(gl._pos, 3, gl.FLOAT, false, 24, 0);
+    if (gl._normal >= 0) {
+      gl.enableVertexAttribArray(gl._normal);
+      gl.vertexAttribPointer(gl._normal, 3, gl.FLOAT, false, 24, 12);
+    }
+    gl.drawArrays(gl.TRIANGLES, 0, gl._count);
+  }
+  if (meshCamera.wire && gl._lines) {
+    gl.uniform1f(gl._light, 0);
+    gl.bindBuffer(gl.ARRAY_BUFFER, gl._lines);
+    gl.enableVertexAttribArray(gl._pos);
+    gl.vertexAttribPointer(gl._pos, 3, gl.FLOAT, false, 12, 0);
+    if (gl._normal >= 0) gl.disableVertexAttribArray(gl._normal);
+    gl.drawArrays(gl.LINES, 0, gl._lineCount);
+  }
 }
 
-function mvp(orbit, aspect) {
-  const model = mul(rotX(orbit.pitch), rotY(orbit.yaw));
-  const view = lookAt([0, 0, orbit.dist], [0, 0, 0], [0, 1, 0]);
-  const projection = perspective(0.7, aspect, 0.05, 40);
-  return mul(projection, mul(view, model));
+function buildGlBuffers(gl, geom) {
+  const count = geom.indices.length;
+  const interleaved = new Float32Array(count * 6);
+  const lines = new Float32Array(count * 6);
+  for (let i = 0; i < count; i += 3) {
+    const a = geom.positions[geom.indices[i]];
+    const b = geom.positions[geom.indices[i + 1]];
+    const c = geom.positions[geom.indices[i + 2]];
+    const normal = faceNormal(a, b, c);
+    const tri = [a, b, c];
+    for (let k = 0; k < 3; k += 1) {
+      const at = (i + k) * 6;
+      interleaved[at] = tri[k][0];
+      interleaved[at + 1] = tri[k][1];
+      interleaved[at + 2] = tri[k][2];
+      interleaved[at + 3] = normal[0];
+      interleaved[at + 4] = normal[1];
+      interleaved[at + 5] = normal[2];
+    }
+    const edge = [a, b, b, c, c, a];
+    for (let k = 0; k < 6; k += 1) {
+      lines[(i * 2 + k) * 3] = edge[k][0];
+      lines[(i * 2 + k) * 3 + 1] = edge[k][1];
+      lines[(i * 2 + k) * 3 + 2] = edge[k][2];
+    }
+  }
+  gl._count = count;
+  gl._buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl._buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, interleaved, gl.STATIC_DRAW);
+  gl._lineCount = count * 2;
+  gl._lines = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, gl._lines);
+  gl.bufferData(gl.ARRAY_BUFFER, lines, gl.STATIC_DRAW);
+}
+
+function faceNormal(a, b, c) {
+  const ux = b[0] - a[0];
+  const uy = b[1] - a[1];
+  const uz = b[2] - a[2];
+  const vx = c[0] - a[0];
+  const vy = c[1] - a[1];
+  const vz = c[2] - a[2];
+  return norm([uy * vz - uz * vy, uz * vx - ux * vz, ux * vy - uy * vx]);
+}
+
+function modelMatrix(orbit) {
+  return mul(rotZ(orbit.roll || 0), mul(rotX(orbit.pitch), rotY(orbit.yaw)));
 }
 
 function rotY(angle) {
@@ -351,6 +509,16 @@ function rotX(angle) {
   const c = Math.cos(angle);
   const s = Math.sin(angle);
   return [1, 0, 0, 0, 0, c, -s, 0, 0, s, c, 0, 0, 0, 0, 1];
+}
+
+function rotZ(angle) {
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  return [c, -s, 0, 0, s, c, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1];
+}
+
+function translate(x, y, z) {
+  return [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, x, y, z, 1];
 }
 
 function perspective(fovy, aspect, near, far) {

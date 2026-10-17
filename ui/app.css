@@ -1044,6 +1044,24 @@ body[data-studio="1"] .settings { background: #1c1c1e; }
 }
 .mesh-view.empty .mesh-empty { color: #8e8e93; }
 .mesh-note:empty { display: none; }
+.mesh-tools { flex-wrap: wrap; }
+.mesh-panel.large {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  width: auto;
+  max-width: none;
+  height: auto;
+  margin: 0;
+  padding: 16px 18px 20px;
+  box-sizing: border-box;
+  background: #1c1c1e;
+}
+.mesh-panel.large .mesh-view {
+  flex: 1;
+  height: auto;
+  min-height: 240px;
+}
 .hero-name {
   color: #1c1c1e;
   font-size: 28px;

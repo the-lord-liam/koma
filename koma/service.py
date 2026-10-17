@@ -22,7 +22,7 @@ from koma.config import load_config, public_settings, save_config
 from koma.formats import FormatError, catalog as format_catalog, project_pixels, resolve_format
 from koma.layouts import LAYOUTS, LayoutError, assist_divide, place, reflow_after_delete, to_stored_line
 from koma.media import media_url, save_image, unlink
-from koma.mesh import NOT_INSTALLED, MeshError, command_available, generate_mesh, obj_from_glb
+from koma.mesh import NOT_INSTALLED, MeshError, command_available, generate_mesh, glb_from_obj, obj_from_glb, parse_glb
 from koma.paths import data_dir, export_root, exports_dir, meshes_dir, previews_dir, safe_slug
 from koma.prompts import (
     ANCHORS,
@@ -1679,6 +1679,42 @@ class Studio:
         self.store.touch(project["id"])
         return self._pack(project["id"])
 
+    def character_mesh_import(self, params: dict) -> dict:
+        character = self.store.get_character(params["id"])
+        source = Path(str(params.get("path") or "")).expanduser()
+        if not source.is_file():
+            raise ValueError("Choose a GLB or OBJ file.")
+        resolved = source.resolve()
+        roots = [Path.home().resolve(), Path(tempfile.gettempdir()).resolve(), data_dir().resolve()]
+        if not any(resolved == root or root in resolved.parents for root in roots):
+            raise ValueError("Choose a model inside your home folder.")
+        if resolved.stat().st_size > 80_000_000:
+            raise ValueError("That model is larger than 80 MB.")
+        if resolved.stat().st_size == 0:
+            raise ValueError("That model file is empty.")
+        raw = resolved.read_bytes()
+        suffix = resolved.suffix.lower()
+        if suffix == ".glb" or raw.startswith(b"glTF"):
+            glb = raw
+        elif suffix == ".obj":
+            try:
+                glb = glb_from_obj(raw.decode("utf-8", "replace"))
+            except MeshError as error:
+                raise ValueError(str(error)) from None
+        else:
+            raise ValueError("Import a .glb or .obj file.")
+        if not isinstance(glb, bytes) or not glb.startswith(b"glTF"):
+            raise ValueError("That file is not a GLB Koma can read.")
+        try:
+            parse_glb(glb)
+        except MeshError as error:
+            raise ValueError(str(error)) from None
+        path = meshes_dir() / f"{new_mesh_id()}.glb"
+        path.write_bytes(glb)
+        self.store.create_mesh(character["id"], resolved.name[:200], "import", "file", str(path))
+        self.store.touch(character["project_id"])
+        return self._pack(character["project_id"])
+
     def character_mesh_delete(self, params: dict) -> dict:
         mesh = self.store.get_mesh(params["id"])
         character = self.store.get_character(mesh["character_id"])
@@ -2832,6 +2868,7 @@ ROUTES = {
     "character.primary": Studio.character_primary,
     "character.delete_ref": Studio.character_delete_ref,
     "character.mesh": Studio.character_mesh,
+    "character.mesh_import": Studio.character_mesh_import,
     "character.mesh_delete": Studio.character_mesh_delete,
     "character.mesh_export": Studio.character_mesh_export,
     "character.mesh_bytes": Studio.character_mesh_bytes,
