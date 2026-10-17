@@ -106,6 +106,9 @@ function parseGlb(buffer) {
   const ranges = [];
   const vecCache = new Map();
   const uvCache = new Map();
+  const morphCache = new Map();
+  const shapeMap = new Map();
+  const shapes = collectShapes(document);
   const nodes = document.nodes || [];
   const meshNodes = [];
   nodes.forEach((node, index) => {
@@ -113,9 +116,13 @@ function parseGlb(buffer) {
   });
   const instances = meshNodes.length ? meshNodes : [null];
   for (const nodeIndex of instances) {
-    const meshes = nodeIndex == null ? document.meshes || [] : [((document.meshes || [])[nodes[nodeIndex].mesh])];
-    const matrix = nodeIndex == null ? null : worlds[nodeIndex];
-    for (const mesh of meshes) {
+    const listed = nodeIndex == null
+      ? (document.meshes || []).map((mesh, index) => [index, mesh])
+      : [[nodes[nodeIndex].mesh, (document.meshes || [])[nodes[nodeIndex].mesh]]];
+    const matrix = nodeIndex == null ? null : worlds.get(nodeIndex);
+    for (const pair of listed) {
+      const meshIndex = pair[0];
+      const mesh = pair[1];
       if (!mesh) continue;
       for (const prim of mesh.primitives || []) {
         if (prim.mode != null && prim.mode !== 4) continue;
@@ -141,6 +148,7 @@ function parseGlb(buffer) {
           const shift = material.transform.offset || [0, 0];
           uv = uv.map((coord) => [coord[0] * scale[0] + shift[0], coord[1] * scale[1] + shift[1]]);
         }
+        const morphs = morphSources(document, bin, prim, meshIndex, matrix, shapes, morphCache);
         const local = prim.indices == null ? chunk.map((_, index) => index) : readScalar(document, bin, prim.indices);
         const remap = new Map();
         const start = indices.length;
@@ -152,6 +160,7 @@ function parseGlb(buffer) {
             remap.set(index, mapped);
             positions.push(chunk[index]);
             uvs.push(uv && uv[index] ? uv[index] : [0, 0]);
+            stashMorphs(shapeMap, morphs, index, mapped);
           }
           indices.push(mapped);
         }
@@ -167,9 +176,112 @@ function parseGlb(buffer) {
     uvs,
     indices,
     ranges,
+    shapes: shapeMap,
+    shapeNames: shapes.names.filter((name) => shapeMap.has(name)),
     materials: (document.materials || []).map((_mat, index) => materialView(document, index)),
     images: readImages(document, bin),
   };
+}
+
+function collectShapes(document) {
+  const found = [];
+  const binds = new Map();
+  const add = (mesh, index, name, scale) => {
+    if (mesh == null || index == null) return;
+    const cleaned = String(name || "").trim();
+    if (!cleaned || cleaned.toLowerCase() === "neutral") return;
+    if (!found.includes(cleaned)) found.push(cleaned);
+    let table = binds.get(mesh);
+    if (!table) {
+      table = new Map();
+      binds.set(mesh, table);
+    }
+    const list = table.get(index) || [];
+    list.push({ name: cleaned, scale: scale == null ? 1 : scale });
+    table.set(index, list);
+  };
+  const groups = ((((document.extensions || {}).VRM || {}).blendShapeMaster || {}).blendShapeGroups) || [];
+  for (const group of groups) {
+    if (!group || group.presetName === "neutral") continue;
+    const name = group.name || group.presetName;
+    for (const bind of group.binds || []) {
+      const weight = bind && bind.weight;
+      const scale = weight == null ? 1 : (Math.abs(weight) > 1 ? weight / 100 : weight);
+      add(bind.mesh, bind.index, name, scale);
+    }
+  }
+  const expressions = (((document.extensions || {}).VRMC_vrm || {}).expressions) || {};
+  for (const bucket of ["preset", "custom"]) {
+    const table = expressions[bucket] || {};
+    for (const key of Object.keys(table)) {
+      if (key === "neutral") continue;
+      const expr = table[key] || {};
+      for (const bind of expr.morphTargetBinds || []) {
+        const node = (document.nodes || [])[bind.node];
+        const mesh = node && node.mesh != null ? node.mesh : null;
+        const weight = bind.weight;
+        const scale = weight == null ? 1 : (Math.abs(weight) > 1 ? weight / 100 : weight);
+        add(mesh, bind.index, expr.name || key, scale);
+      }
+    }
+  }
+  if (!found.length) {
+    (document.meshes || []).forEach((mesh, meshIndex) => {
+      const names = (mesh && mesh.extras && mesh.extras.targetNames) || [];
+      names.forEach((name, index) => add(meshIndex, index, name, 1));
+    });
+  }
+  const preferred = ["Blink", "A", "I", "U", "E", "O", "Joy", "Angry", "Sorrow", "Fun", "Surprised", "Blink_L", "Blink_R"];
+  const ordered = found.slice().sort((a, b) => {
+    const ia = preferred.indexOf(a);
+    const ib = preferred.indexOf(b);
+    if (ia === -1 && ib === -1) return found.indexOf(a) - found.indexOf(b);
+    if (ia === -1) return 1;
+    if (ib === -1) return -1;
+    return ia - ib;
+  }).slice(0, 12);
+  return { names: ordered, binds, keep: new Set(ordered) };
+}
+
+function morphSources(document, bin, prim, meshIndex, matrix, shapes, morphCache) {
+  const table = shapes.binds.get(meshIndex);
+  const sources = [];
+  (prim.targets || []).forEach((target, index) => {
+    const named = ((table && table.get(index)) || []).filter((item) => shapes.keep.has(item.name));
+    if (!named.length || !target || target.POSITION == null) return;
+    let raw = morphCache.get(target.POSITION);
+    if (!raw) {
+      try {
+        raw = readVec3(document, bin, target.POSITION);
+      } catch (_error) {
+        return;
+      }
+      morphCache.set(target.POSITION, raw);
+    }
+    if (matrix && !isIdentity(matrix)) raw = raw.map((point) => mulDir(matrix, point));
+    sources.push({ named, raw });
+  });
+  return sources;
+}
+
+function stashMorphs(shapeMap, sources, sourceIndex, mapped) {
+  for (const source of sources) {
+    const delta = source.raw[sourceIndex] || [0, 0, 0];
+    for (const item of source.named) {
+      let bucket = shapeMap.get(item.name);
+      if (!bucket) {
+        bucket = [];
+        shapeMap.set(item.name, bucket);
+      }
+      const scaled = item.scale === 1
+        ? delta
+        : [delta[0] * item.scale, delta[1] * item.scale, delta[2] * item.scale];
+      const previous = bucket[mapped];
+      bucket[mapped] = previous
+        ? [previous[0] + scaled[0], previous[1] + scaled[1], previous[2] + scaled[2]]
+        : scaled;
+    }
+  }
 }
 
 function materialView(document, index) {
@@ -365,6 +477,14 @@ function mulPoint(matrix, point) {
   ];
 }
 
+function mulDir(matrix, point) {
+  return [
+    matrix[0] * point[0] + matrix[4] * point[1] + matrix[8] * point[2],
+    matrix[1] * point[0] + matrix[5] * point[1] + matrix[9] * point[2],
+    matrix[2] * point[0] + matrix[6] * point[1] + matrix[10] * point[2],
+  ];
+}
+
 const meshCamera = window.meshCamera = {
   meshId: "",
   yaw: 0.7,
@@ -378,6 +498,13 @@ const meshCamera = window.meshCamera = {
   wire: false,
   light: true,
   large: false,
+  grid: false,
+  backdrop: "dark",
+  shape: "",
+  shapeNames: [],
+  shapeKey: "",
+  angle: "",
+  thumbFor: {},
 };
 let meshSpin = 0;
 
@@ -388,10 +515,20 @@ function resetMeshCamera() {
   meshCamera.dist = meshCamera.baseDist || 3.2;
   meshCamera.panX = 0;
   meshCamera.panY = 0;
+  meshCamera.angle = "";
 }
 
 function meshFlags() {
-  return { auto: meshCamera.auto, wire: meshCamera.wire, light: meshCamera.light, large: meshCamera.large };
+  return {
+    auto: meshCamera.auto,
+    wire: meshCamera.wire,
+    light: meshCamera.light,
+    large: meshCamera.large,
+    grid: meshCamera.grid,
+    backdrop: meshCamera.backdrop,
+    shape: meshCamera.shape,
+    angle: meshCamera.angle,
+  };
 }
 
 function showMesh(canvas, geom) {
@@ -399,7 +536,15 @@ function showMesh(canvas, geom) {
   if (!geom.centered) {
     centerGeometry(geom);
     geom.centered = true;
+    geom.rest = geom.positions.map((point) => [point[0], point[1], point[2]]);
   }
+  if (meshCamera.meshId !== id) {
+    meshCamera.shape = "";
+    meshCamera.angle = "";
+    meshCamera.shapeNames = [];
+    meshCamera.shapeKey = "";
+  }
+  poseGeometry(geom);
   const span = Math.max(geom.half[0], geom.half[1], 0.05);
   const textured = geom.materials.some((mat) => mat.element);
   const triangles = geom.indices.length / 3;
@@ -417,25 +562,61 @@ function showMesh(canvas, geom) {
   canvas._orbit = meshCamera;
   bindOrbit(canvas);
   ensureSpin();
+  const present = () => {
+    redraw(canvas);
+    if (useGl && webglBlank(canvas) && canvas.getContext("2d")) {
+      geom.preferCanvas = true;
+      canvas._gl = null;
+      canvas.dataset.mode = "canvas";
+      meshCamera.baseDist = Math.max(1.2, span * 2.15);
+      meshCamera.dist = meshCamera.baseDist;
+      redraw(canvas);
+    }
+    queueThumb(canvas);
+    publishShapes(geom);
+  };
   if (useGl) {
     canvas._gl = gl;
     canvas.dataset.mode = "webgl";
-    requestAnimationFrame(() => {
-      redraw(canvas);
-      if (webglBlank(canvas) && canvas.getContext("2d")) {
-        geom.preferCanvas = true;
-        canvas._gl = null;
-        canvas.dataset.mode = "canvas";
-        meshCamera.baseDist = Math.max(1.2, span * 2.15);
-        meshCamera.dist = meshCamera.baseDist;
-        redraw(canvas);
-      }
-    });
+    requestAnimationFrame(present);
     return;
   }
   canvas._gl = null;
   canvas.dataset.mode = "canvas";
-  requestAnimationFrame(() => redraw(canvas));
+  requestAnimationFrame(present);
+}
+
+function poseGeometry(geom) {
+  if (!geom.rest) return;
+  const deltas = geom.shapes && meshCamera.shape && geom.shapes.get ? geom.shapes.get(meshCamera.shape) : null;
+  geom.positions = geom.rest.map((point, index) => {
+    const delta = deltas && deltas[index];
+    if (!delta) return [point[0], point[1], point[2]];
+    return [point[0] + delta[0], point[1] + delta[1], point[2] + delta[2]];
+  });
+  geom._glBuilt = null;
+}
+
+function publishShapes(geom) {
+  const names = geom.shapeNames || [];
+  const key = `${meshCamera.meshId}\n${names.join("\n")}`;
+  const changed = meshCamera.shapeKey !== key;
+  meshCamera.shapeKey = key;
+  meshCamera.shapeNames = names.slice();
+  if (changed && window.render) render();
+}
+
+function queueThumb(canvas) {
+  const id = canvas.dataset.meshId;
+  if (!id || canvas.dataset.hasThumb === "1" || canvas.dataset.ready !== "1") return;
+  if (meshCamera.thumbFor[id]) return;
+  let png = "";
+  try { png = canvas.toDataURL("image/png"); } catch (_error) { return; }
+  if (!png || png.length < 64) return;
+  meshCamera.thumbFor[id] = true;
+  rpc("character.mesh_thumb", { id, png }).then((pack) => {
+    if (pack && pack.tree && window.absorb) absorb(pack);
+  }).catch(() => {});
 }
 
 function centerGeometry(geom) {
@@ -565,8 +746,9 @@ function webglBlank(canvas) {
     for (let x = 0.32; x <= 0.68; x += 0.12) {
       gl.readPixels((w * x) | 0, (h * y) | 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixel);
       const gray = Math.abs(pixel[0] - pixel[1]) < 6 && Math.abs(pixel[1] - pixel[2]) < 6;
-      const clear = gray && pixel[0] > 34 && pixel[0] < 52;
-      if (!clear) colored += 1;
+      const darkClear = gray && pixel[0] > 34 && pixel[0] < 52;
+      const lightClear = gray && pixel[0] > 220 && pixel[0] < 245;
+      if (!darkClear && !lightClear) colored += 1;
     }
   }
   return colored < 2;
@@ -614,13 +796,75 @@ function materialAt(geom, index) {
   return geom.materials[index] || { color: [1, 0.28, 0.22], alpha: "OPAQUE", cutoff: 0.5, sampler: null };
 }
 
+function gridSegments(geom) {
+  const half = geom.half || [0.5, 0.5, 0.5];
+  const y = -half[1] - Math.max(half[1], 0.05) * 0.04;
+  const span = Math.max(half[0], half[2], 0.25) * 2.4;
+  const step = span / 4;
+  const lines = [];
+  for (let i = -4; i <= 4; i += 1) {
+    const t = i * step;
+    lines.push([[-span, y, t], [span, y, t]]);
+    lines.push([[t, y, -span], [t, y, span]]);
+  }
+  return lines;
+}
+
+function paintBackdrop(ctx, canvas) {
+  const light = meshCamera.backdrop === "light";
+  ctx.fillStyle = light ? "#e8e8ec" : "#2a2a2c";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  if (!meshCamera.grid || !canvas._geom) return;
+  ctx.strokeStyle = light ? "rgba(60,60,67,0.45)" : "rgba(210,210,214,0.4)";
+  ctx.lineWidth = 1;
+  for (const segment of gridSegments(canvas._geom)) {
+    const a = projectPoint(segment[0], canvas._orbit, canvas.width, canvas.height);
+    const b = projectPoint(segment[1], canvas._orbit, canvas.width, canvas.height);
+    ctx.beginPath();
+    ctx.moveTo(a.x, a.y);
+    ctx.lineTo(b.x, b.y);
+    ctx.stroke();
+  }
+}
+
+function drawGridGl(gl, geom) {
+  const lines = gridSegments(geom);
+  const verts = new Float32Array(lines.length * 6);
+  lines.forEach((segment, index) => {
+    const at = index * 6;
+    verts[at] = segment[0][0];
+    verts[at + 1] = segment[0][1];
+    verts[at + 2] = segment[0][2];
+    verts[at + 3] = segment[1][0];
+    verts[at + 4] = segment[1][1];
+    verts[at + 5] = segment[1][2];
+  });
+  if (!geom._gridBuf || geom._gridGl !== gl) {
+    if (geom._gridBuf) gl.deleteBuffer(geom._gridBuf);
+    geom._gridBuf = gl.createBuffer();
+    geom._gridGl = gl;
+  }
+  gl.bindBuffer(gl.ARRAY_BUFFER, geom._gridBuf);
+  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+  gl.uniform1f(gl._line, 1);
+  gl.uniform1f(gl._tex, 0);
+  const tone = meshCamera.backdrop === "light" ? 0.45 : 0.72;
+  gl.uniform3f(gl._color, tone, tone, tone);
+  gl.enableVertexAttribArray(gl._pos);
+  gl.vertexAttribPointer(gl._pos, 3, gl.FLOAT, false, 12, 0);
+  if (gl._normal >= 0) gl.disableVertexAttribArray(gl._normal);
+  if (gl._uv >= 0) gl.disableVertexAttribArray(gl._uv);
+  gl.depthMask(true);
+  gl.drawArrays(gl.LINES, 0, verts.length / 3);
+  gl.uniform1f(gl._line, 0);
+}
+
 function drawCanvas(canvas) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
   const geom = canvas._geom;
   const orbit = canvas._orbit;
-  ctx.fillStyle = "#2a2a2c";
-  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  paintBackdrop(ctx, canvas);
   const projected = geom.positions.map((point) => projectPoint(point, orbit, canvas.width, canvas.height));
   const stride = Math.max(1, Math.ceil(geom.indices.length / 3 / 7000));
   const faces = [];
@@ -714,7 +958,7 @@ function glProgram(gl) {
     varying vec2 vUv;
     void main() {
       if (uLine > 0.5) {
-        gl_FragColor = vec4(1.0, 1.0, 1.0, 1.0);
+        gl_FragColor = vec4(uColor, 1.0);
         return;
       }
       vec4 base = vec4(uColor, 1.0);
@@ -766,7 +1010,8 @@ function drawGl(canvas) {
   const gl = canvas._gl;
   const geom = canvas._geom;
   gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.clearColor(0.165, 0.165, 0.173, 1);
+  const lightGround = meshCamera.backdrop === "light";
+  gl.clearColor(lightGround ? 0.91 : 0.165, lightGround ? 0.91 : 0.165, lightGround ? 0.925 : 0.173, 1);
   gl.enable(gl.DEPTH_TEST);
   gl.enable(gl.BLEND);
   gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
@@ -783,6 +1028,7 @@ function drawGl(canvas) {
   gl.uniformMatrix4fv(gl._model, false, new Float32Array(model));
   gl.uniformMatrix4fv(gl._mvp, false, new Float32Array(mul(projection, mul(view, model))));
   gl.uniform1i(gl._map, 0);
+  if (meshCamera.grid) drawGridGl(gl, geom);
   const opaque = [];
   const blended = [];
   for (const range of geom.ranges) {
@@ -800,6 +1046,7 @@ function drawGl(canvas) {
   if (meshCamera.wire) {
     gl.uniform1f(gl._line, 1);
     gl.uniform1f(gl._tex, 0);
+    gl.uniform3f(gl._color, 1, 1, 1);
     for (const range of geom.ranges) {
       if (!range.lines) continue;
       gl.bindBuffer(gl.ARRAY_BUFFER, range.lines);
@@ -862,6 +1109,8 @@ function textureFor(gl, mat) {
 function ensureGlBuffers(gl, geom) {
   if (geom._glBuilt === gl) return;
   for (const range of geom.ranges) {
+    if (range.buffer) gl.deleteBuffer(range.buffer);
+    if (range.lines) gl.deleteBuffer(range.lines);
     const count = range.count;
     const interleaved = new Float32Array(count * 8);
     const step = Math.max(1, Math.floor(count / 3 / 4000));

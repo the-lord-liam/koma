@@ -177,6 +177,72 @@ def parse_glb(data: bytes) -> tuple[list[tuple[float, float, float]], list[int]]
     return positions, indices
 
 
+def blend_shape_names(data: bytes) -> list[str]:
+    """Expression names stored on a GLB or VRM. Neutral is the rest pose."""
+    document, _blob = _chunks(data)
+    found: list[str] = []
+
+    def add(name: object) -> None:
+        cleaned = str(name or "").strip()
+        if not cleaned or cleaned.lower() == "neutral" or cleaned in found:
+            return
+        found.append(cleaned)
+
+    extensions = document.get("extensions") or {}
+    master = ((extensions.get("VRM") or {}).get("blendShapeMaster") or {})
+    for group in master.get("blendShapeGroups") or []:
+        if not isinstance(group, dict) or group.get("presetName") == "neutral":
+            continue
+        add(group.get("name") or group.get("presetName"))
+    expressions = ((extensions.get("VRMC_vrm") or {}).get("expressions") or {})
+    for bucket in ("preset", "custom"):
+        table = expressions.get(bucket) or {}
+        if not isinstance(table, dict):
+            continue
+        for key, expr in table.items():
+            if key == "neutral":
+                continue
+            add((expr or {}).get("name") if isinstance(expr, dict) else key)
+    if found:
+        return found[:12]
+    for mesh in document.get("meshes") or []:
+        extras = (mesh or {}).get("extras") or {}
+        for name in extras.get("targetNames") or []:
+            add(name)
+    return found[:12]
+
+
+def read_morph(data: bytes, mesh_index: int = 0, target_index: int = 0) -> list[tuple[float, float, float]]:
+    """Position deltas for one morph target, in the file's vertex order."""
+    document, blob = _chunks(data)
+    meshes = document.get("meshes") or []
+    if mesh_index < 0 or mesh_index >= len(meshes):
+        raise MeshError("That model has no expression there.")
+    primitives = meshes[mesh_index].get("primitives") or []
+    if not primitives:
+        raise MeshError("That model has no expression there.")
+    targets = primitives[0].get("targets") or []
+    if target_index < 0 or target_index >= len(targets):
+        raise MeshError("That model has no expression there.")
+    accessor = (targets[target_index] or {}).get("POSITION")
+    if accessor is None:
+        raise MeshError("That expression does not move the mesh.")
+    return _read_vec3(document, blob, accessor)
+
+
+def apply_morph(
+    positions: list[tuple[float, float, float]],
+    deltas: list[tuple[float, float, float]],
+    weight: float = 1.0,
+) -> list[tuple[float, float, float]]:
+    """Rest pose plus one morph. The viewer uses the same addition."""
+    moved = []
+    for index, point in enumerate(positions):
+        delta = deltas[index] if index < len(deltas) else (0.0, 0.0, 0.0)
+        moved.append((point[0] + delta[0] * weight, point[1] + delta[1] * weight, point[2] + delta[2] * weight))
+    return moved
+
+
 def obj_from_glb(data: bytes) -> bytes:
     positions, indices = parse_glb(data)
     lines = ["# Koma"]
