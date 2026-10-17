@@ -1092,7 +1092,7 @@ function characterMesh(person) {
         ${current ? `<canvas data-mesh-id="${esc(current.id)}" data-mesh-url="${esc(current.url)}" data-has-thumb="${current.thumb ? "1" : ""}" width="640" height="360" aria-label="3D model of ${esc(person.name)}"></canvas>` : `<p class="mesh-empty">Generate a model, or import a GLB, VRM, or OBJ file.</p>`}
         <p class="mesh-note"></p>
       </div>
-      ${current ? `<p class="meta">Drag to orbit any way. Shift-drag pans. Alt-drag rolls. Scroll zooms.</p>
+      ${current ? `<div class="mesh-side"><p class="meta">Drag to orbit any way. Shift-drag pans. Alt-drag rolls. Scroll zooms.</p>
         ${shapeRow}
         ${poseControls(person, current)}
         ${shapes.length ? `<p class="meta">Expressions move morph targets and stay on while a pose is set. Front, side, and three-quarter turn the camera.</p>` : ""}
@@ -1115,7 +1115,7 @@ function characterMesh(person) {
           <button type="button" class="ghost" data-act="export-mesh" data-id="${esc(current.id)}" data-format="obj" ${state.busy ? "disabled" : ""}>Export OBJ</button>
           <button type="button" class="danger" data-act="delete-mesh" data-id="${esc(current.id)}" ${state.busy ? "disabled" : ""}>Delete model</button>
         </div>
-        ${older ? `<div class="row">${older}</div>` : ""}` : ""}
+        ${older ? `<div class="row">${older}</div>` : ""}</div>` : ""}
     </section>
   `;
 }
