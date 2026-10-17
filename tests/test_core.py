@@ -1847,6 +1847,160 @@ process.stdout.write(JSON.stringify({ mid, held, curved }));
         self.assertEqual(got["held"], [0.0, 0.0, 0.0])
         self.assertAlmostEqual(got["curved"][0], 1.0, places=5)
 
+    def test_preset_knees_bend_forward_and_hinges_clamp(self):
+        import subprocess
+
+        script = r"""
+const fs = require("fs");
+const vm = require("vm");
+global.window = global;
+global.document = {
+  querySelector() { return null; },
+  querySelectorAll() { return []; },
+  addEventListener() {},
+  createElement() { return { getContext() { return null; } }; },
+};
+global.performance = { now: () => 0 };
+global.requestAnimationFrame = () => 1;
+vm.runInThisContext(fs.readFileSync("ui/view3d.js", "utf8"));
+
+function figure(rightX) {
+  const nodes = [];
+  const parent = [];
+  const humanoid = {};
+  function add(name, parentIndex, t) {
+    const index = nodes.length;
+    nodes.push({ t, r: [0, 0, 0, 1], s: [1, 1, 1], matrix: null });
+    parent.push(parentIndex);
+    if (name) humanoid[name] = index;
+    return index;
+  }
+  const leftX = -rightX;
+  const leftSign = leftX >= 0 ? 1 : -1;
+  const rightSign = rightX >= 0 ? 1 : -1;
+  const hips = add("hips", -1, [0, 1, 0]);
+  const spine = add("spine", hips, [0, 0.15, 0]);
+  const chest = add("chest", spine, [0, 0.2, 0]);
+  add("neck", chest, [0, 0.2, 0]);
+  add("head", humanoid.neck, [0, 0.15, 0]);
+  const leftUpper = add("leftUpperArm", chest, [leftX, 0.05, 0]);
+  const leftLower = add("leftLowerArm", leftUpper, [0.3 * leftSign, 0, 0]);
+  add("leftHand", leftLower, [0.25 * leftSign, 0, 0]);
+  const rightUpper = add("rightUpperArm", chest, [rightX, 0.05, 0]);
+  const rightLower = add("rightLowerArm", rightUpper, [0.3 * rightSign, 0, 0]);
+  add("rightHand", rightLower, [0.25 * rightSign, 0, 0]);
+  const leftThigh = add("leftUpperLeg", hips, [0.1 * leftSign, -0.05, 0]);
+  const leftShin = add("leftLowerLeg", leftThigh, [0, -0.4, 0]);
+  add("leftFoot", leftShin, [0, -0.4, 0]);
+  const rightThigh = add("rightUpperLeg", hips, [0.1 * rightSign, -0.05, 0]);
+  const rightShin = add("rightLowerLeg", rightThigh, [0, -0.4, 0]);
+  add("rightFoot", rightShin, [0, -0.4, 0]);
+  return { rig: { nodes, parent }, humanoid };
+}
+
+function pos(geom, worlds, name) {
+  const node = geom.humanoid[name];
+  return [worlds[node][12], worlds[node][13], worlds[node][14]];
+}
+function sub(a, b) { return [a[0] - b[0], a[1] - b[1], a[2] - b[2]]; }
+function nrm(v) {
+  const length = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / length, v[1] / length, v[2] / length];
+}
+function flexOf(geom, worlds, bindWorlds, axes, hinge) {
+  const childName = (CHILD_CHAIN[hinge.bone] || []).find((item) => geom.humanoid[item] != null);
+  const childDir = boneDirection(geom, worlds, hinge.bone, childName);
+  let straight;
+  let pole;
+  if (hinge.parent) {
+    straight = boneDirection(geom, worlds, hinge.parent, hinge.bone);
+    pole = carriedPole(geom, bindWorlds, worlds, hinge.parent, axes, hinge.pole);
+  } else {
+    straight = scaleVec(axes.up, -1);
+    pole = axes[hinge.pole];
+  }
+  return flexionDegrees(straight, childDir, pole);
+}
+function aimChild(geom, bone, child, target) {
+  const bindWorlds = boneWorlds(geom, {});
+  const node = geom.humanoid[bone];
+  const dir = boneDirection(geom, bindWorlds, bone, child);
+  const bindRot = quatFromMatrix(bindWorlds[node]);
+  const localDir = rotateVec(invQuat(bindRot), dir);
+  const parent = geom.rig.parent[node];
+  const parentRot = quatFromMatrix(bindWorlds[parent]);
+  const worldRot = mulQuat(parentRot, geom.rig.nodes[node].r);
+  const worldDir = rotateVec(worldRot, localDir);
+  const aimed = mulQuat(quatFromTo(worldDir, target), worldRot);
+  return { [bone]: normalizeQuat(mulQuat(invQuat(parentRot), aimed)) };
+}
+
+const report = [];
+for (const rightX of [0.2, -0.2]) {
+  const geom = figure(rightX);
+  const bindWorlds = boneWorlds(geom, {});
+  const axes = modelAxes(geom, bindWorlds);
+  const expectForward = rightX > 0 ? [0, 0, -1] : [0, 0, 1];
+  const pose = buildPreset(geom, "sit");
+  const worlds = boneWorlds(geom, pose);
+  const hip = pos(geom, worlds, "leftUpperLeg");
+  const knee = pos(geom, worlds, "leftLowerLeg");
+  const ankle = pos(geom, worlds, "leftFoot");
+  const thigh = nrm(sub(knee, hip));
+  const shin = nrm(sub(ankle, knee));
+  const hinges = {};
+  for (const name of ["relaxed", "walk", "run", "sit", "point", "cross", "fight"]) {
+    const posed = boneWorlds(geom, buildPreset(geom, name));
+    hinges[name] = POSE_HINGES.map((hinge) => flexOf(geom, posed, bindWorlds, axes, hinge));
+  }
+  const hyper = aimChild(geom, "leftLowerLeg", "leftFoot", axes.forward);
+  const before = nrm(sub(pos(geom, boneWorlds(geom, hyper), "leftFoot"), pos(geom, boneWorlds(geom, hyper), "leftLowerLeg")));
+  clampHinges(geom, hyper);
+  const afterWorlds = boneWorlds(geom, hyper);
+  const after = nrm(sub(pos(geom, afterWorlds, "leftFoot"), pos(geom, afterWorlds, "leftLowerLeg")));
+  const back = scaleVec(axes.forward, -1);
+  const folded = nrm([back[0] * 0.65 - axes.up[0] * 0.75, back[1] * 0.65 - axes.up[1] * 0.75, back[2] * 0.65 - axes.up[2] * 0.75]);
+  const legal = aimChild(geom, "leftLowerLeg", "leftFoot", folded);
+  const legalFlex = flexOf(geom, boneWorlds(geom, legal), bindWorlds, axes, POSE_HINGES[2]);
+  clampHinges(geom, legal);
+  const keptFlex = flexOf(geom, boneWorlds(geom, legal), bindWorlds, axes, POSE_HINGES[2]);
+  report.push({
+    rightX,
+    forward: axes.forward,
+    expectForward,
+    thighForward: dot(thigh, axes.forward),
+    shinUp: dot(shin, axes.up),
+    kneeFlex: flexOf(geom, worlds, bindWorlds, axes, POSE_HINGES[2]),
+    hyperBefore: dot(before, axes.forward),
+    hyperAfter: dot(after, axes.forward),
+    legalFlex,
+    keptFlex,
+    hinges,
+  });
+}
+process.stdout.write(JSON.stringify(report));
+"""
+        completed = subprocess.run(["node", "-e", script], cwd="/workspace", capture_output=True, text=True, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertEqual(len(report), 2)
+        for item in report:
+            self.assertGreater(sum(a * b for a, b in zip(item["forward"], item["expectForward"])), 0.9)
+            self.assertGreater(item["thighForward"], 0.7)
+            self.assertLess(item["shinUp"], -0.7)
+            self.assertGreater(item["kneeFlex"], 40)
+            self.assertGreater(item["hyperBefore"], 0.7)
+            self.assertLess(item["hyperAfter"], 0.15)
+            self.assertGreater(item["legalFlex"], 30)
+            self.assertGreater(item["keptFlex"], 30)
+            for name, angles in item["hinges"].items():
+                self.assertEqual(len(angles), 6)
+                for angle, hinge in zip(angles, (
+                    (-65, 115), (-65, 115), (0, 150), (0, 150), (0, 150), (0, 150),
+                )):
+                    self.assertGreaterEqual(angle, hinge[0] - 0.5, name)
+                    self.assertLessEqual(angle, hinge[1] + 0.5, name)
+
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
 
