@@ -172,6 +172,6 @@ You're welcome to fork Koma, but you don't have to stop there. Feel free to take
 
 ## License
 
-Koma is open source under the [MIT license](LICENSE). Fork it, change it, and share your version. The copyright notice in that file needs to stay with the copies you share.
+Koma is free and open source under the [MIT license](LICENSE). Fork it, change it, and share your version. The copyright notice in that file needs to stay with the copies you share.
 
 An xAI API key stays on your machine, in `~/.config/koma/config.json` or in `XAI_API_KEY`. It is not part of this repository.
