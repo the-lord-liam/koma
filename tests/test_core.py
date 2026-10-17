@@ -1294,6 +1294,97 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(stored.exists())
         self.assertEqual(self.store.list_meshes(character_id), [])
 
+    def test_mesh_import_vrm_textures_and_placed_parts(self):
+        import base64
+
+        from koma.mesh import MeshError, _assemble, _chunks, cube_glb, load_model_file, parse_glb
+
+        created = self.studio.project_create({"title": "Figures", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        made = self.studio.character_create({"projectId": project_id, "name": "Shino"})
+        character_id = made["tree"]["characters"][-1]["id"]
+        folder = Path(self.tmp.name) / "pack"
+        folder.mkdir()
+        png = folder / "skin.png"
+        Image.new("RGB", (2, 2), (20, 180, 40)).save(png, format="PNG")
+        document, blob = _chunks(cube_glb())
+        document["nodes"] = [
+            {"children": [1], "translation": [0, 2, 0]},
+            {"mesh": 0, "translation": [0, 3, 0]},
+        ]
+        document["images"] = [{"uri": "skin.png"}]
+        document["textures"] = [{"source": 0}]
+        document["materials"] = [{"pbrMetallicRoughness": {"baseColorTexture": {"index": 0}}}]
+        document["meshes"][0]["primitives"][0]["material"] = 0
+        placed = folder / "placed.glb"
+        placed.write_bytes(_assemble(document, blob))
+
+        loaded = load_model_file(placed)
+        positions, _indices = parse_glb(loaded)
+        self.assertGreater(min(point[1] for point in positions), 4)
+        baked, _baked_blob = _chunks(loaded)
+        self.assertNotIn("translation", baked["nodes"][0])
+        self.assertNotIn("translation", baked["nodes"][1])
+        self.assertNotIn("uri", baked["images"][0])
+        self.assertIn(b"\x89PNG", loaded)
+
+        imported = self.studio.character_mesh_import({"id": character_id, "path": str(placed)})
+        mesh = imported["tree"]["characters"][-1]["meshes"][0]
+        self.assertEqual(mesh["prompt"], "placed.glb")
+        part = self.studio.character_mesh_bytes({"id": mesh["id"], "offset": 0})
+        self.assertEqual(part["total"], Path(self.store.get_mesh(mesh["id"])["glb_path"]).stat().st_size)
+        self.assertTrue(base64.b64decode(part["glb"]).startswith(b"glTF"))
+
+        vrm = folder / "hero.vrm"
+        vrm.write_bytes(cube_glb())
+        again = self.studio.character_mesh_import({"id": character_id, "path": str(vrm)})
+        self.assertEqual(again["tree"]["characters"][-1]["meshes"][0]["prompt"], "hero.vrm")
+        bad = folder / "notes.vrm"
+        bad.write_bytes(b"not a vrm")
+        with self.assertRaises(ValueError) as broken:
+            self.studio.character_mesh_import({"id": character_id, "path": str(bad)})
+        self.assertIn("GLB", str(broken.exception))
+
+        outside = folder / "escape.glb"
+        escaped, escaped_blob = _chunks(cube_glb())
+        escaped["images"] = [{"uri": "../secret.png"}]
+        outside.write_bytes(_assemble(escaped, escaped_blob))
+        secret = Path(self.tmp.name) / "secret.png"
+        secret.write_bytes(b"\x89PNG-secret")
+        with self.assertRaises(MeshError) as leaked:
+            load_model_file(outside)
+        self.assertIn("outside", str(leaked.exception))
+        remote, remote_blob = _chunks(cube_glb())
+        remote["images"] = [{"uri": "https://example.com/skin.png"}]
+        web = folder / "web.glb"
+        web.write_bytes(_assemble(remote, remote_blob))
+        with self.assertRaises(MeshError) as online:
+            load_model_file(web)
+        self.assertIn("web", str(online.exception))
+
+        (folder / "hero.mtl").write_text("newmtl skin\nKd 1 0 0\nmap_Kd skin.png\n", encoding="utf-8")
+        (folder / "hero.obj").write_text(
+            "mtllib hero.mtl\nusemtl skin\n"
+            "v 0 0 0 1 1 1\nv 1 0 0\nv 0 1 0\n"
+            "vt 0 0\nvt 1 0\nvt 0 1\n"
+            "f 1/1/1 2/2/1 3/3/1\n",
+            encoding="utf-8",
+        )
+        obj_import = self.studio.character_mesh_import({"id": character_id, "path": str(folder / "hero.obj")})
+        obj_mesh = obj_import["tree"]["characters"][-1]["meshes"][0]
+        self.assertEqual(obj_mesh["prompt"], "hero.obj")
+        stored = Path(self.store.get_mesh(obj_mesh["id"])["glb_path"]).read_bytes()
+        obj_doc, _obj_blob = _chunks(stored)
+        primitive = obj_doc["meshes"][0]["primitives"][0]
+        self.assertIn("TEXCOORD_0", primitive["attributes"])
+        self.assertNotIn("uri", obj_doc["images"][0])
+        self.assertIn(b"\x89PNG", stored)
+
+        obj_path = self.store.get_mesh(obj_mesh["id"])["glb_path"]
+        self.studio.project_delete({"id": project_id})
+        self.assertFalse(Path(obj_path).exists())
+        self.assertEqual(self.store.list_meshes(character_id), [])
+
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
 
