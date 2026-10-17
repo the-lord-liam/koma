@@ -1238,6 +1238,62 @@ class CoreTests(unittest.TestCase):
         roundtrip = glb_from_obj(obj_from_glb(cube_glb()).decode("utf-8"))
         self.assertTrue(roundtrip.startswith(b"glTF"))
 
+    def test_mesh_import_glb_and_obj(self):
+        from koma.mesh import cube_glb, obj_from_glb, parse_glb
+
+        created = self.studio.project_create({"title": "Imports", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        made = self.studio.character_create({"projectId": project_id, "name": "Aki"})
+        character_id = made["tree"]["characters"][-1]["id"]
+        folder = Path(self.tmp.name)
+        glb_path = folder / "sample.glb"
+        obj_path = folder / "sample.obj"
+        glb_path.write_bytes(cube_glb())
+        obj_path.write_text(obj_from_glb(cube_glb()).decode("utf-8"), encoding="utf-8")
+
+        imported = self.studio.character_mesh_import({"id": character_id, "path": str(glb_path)})
+        mesh = imported["tree"]["characters"][-1]["meshes"][0]
+        self.assertEqual(mesh["provider"], "import")
+        self.assertEqual(mesh["source"], "file")
+        self.assertEqual(mesh["prompt"], "sample.glb")
+        stored = Path(self.store.get_mesh(mesh["id"])["glb_path"])
+        self.assertTrue(stored.is_file())
+        positions, indices = parse_glb(stored.read_bytes())
+        self.assertGreaterEqual(len(positions), 8)
+        self.assertGreaterEqual(len(indices), 36)
+
+        from_obj = self.studio.character_mesh_import({"id": character_id, "path": str(obj_path)})
+        second = from_obj["tree"]["characters"][-1]["meshes"][0]
+        self.assertEqual(second["prompt"], "sample.obj")
+        self.assertEqual(len(from_obj["tree"]["characters"][-1]["meshes"]), 2)
+        obj_positions, _obj_indices = parse_glb(Path(self.store.get_mesh(second["id"])["glb_path"]).read_bytes())
+        self.assertGreaterEqual(len(obj_positions), 8)
+
+        outside = Path("/etc/hostname")
+        if outside.is_file():
+            with self.assertRaises(ValueError) as blocked:
+                self.studio.character_mesh_import({"id": character_id, "path": str(outside)})
+            self.assertIn("home folder", str(blocked.exception))
+        junk = folder / "notes.glb"
+        junk.write_bytes(b"not a mesh")
+        with self.assertRaises(ValueError) as bad:
+            self.studio.character_mesh_import({"id": character_id, "path": str(junk)})
+        self.assertIn("GLB", str(bad.exception))
+        empty = folder / "empty.obj"
+        empty.write_text("v 0 0 0\n", encoding="utf-8")
+        with self.assertRaises(ValueError) as no_faces:
+            self.studio.character_mesh_import({"id": character_id, "path": str(empty)})
+        self.assertIn("faces", str(no_faces.exception).lower())
+        text = folder / "readme.txt"
+        text.write_text("hello", encoding="utf-8")
+        with self.assertRaises(ValueError) as kind:
+            self.studio.character_mesh_import({"id": character_id, "path": str(text)})
+        self.assertIn(".glb", str(kind.exception))
+
+        self.studio.character_delete({"id": character_id})
+        self.assertFalse(stored.exists())
+        self.assertEqual(self.store.list_meshes(character_id), [])
+
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
 

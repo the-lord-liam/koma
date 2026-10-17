@@ -274,6 +274,7 @@ function paintHelp() {
         <li><kbd>[</kbd> <kbd>]</kbd> Move the selected panel earlier or later</li>
         <li><kbd>Delete</kbd> Delete the selected panel</li>
         <li><kbd>←</kbd> <kbd>→</kbd> Turn the page in Read</li>
+        <li>3D model: drag orbits, Shift-drag pans, Alt-drag rolls, scroll zooms</li>
       </ul>
       <p class="meta">Drag a page in the list, or a panel on the sheet, to reorder it. The Earlier and Later buttons do the same. The last 20 edits on a page stay on disk.</p>
       <button type="button" class="ghost" data-act="close-help">Close</button>
@@ -1030,7 +1031,8 @@ function characterFields(person) {
       <button type="button" class="chip ${state.meshSource === "refs" ? "on" : ""}" data-act="mesh-source" data-value="refs">From references</button>
     </div>
     <button type="button" class="rail-go" data-act="gen-mesh" data-id="${esc(person.id)}" ${state.busy ? "disabled" : ""}>Generate 3D model</button>
-    <p class="meta">Local TripoSR is the default. It lifts a picture on your machine. A prompt with no portrait draws a reference first. Meshy and Tripo need a key in Settings.</p>
+    <button type="button" class="ghost" data-act="import-mesh" data-id="${esc(person.id)}" ${state.busy ? "disabled" : ""}>Import GLB or OBJ</button>
+    <p class="meta">Local TripoSR is the default. It lifts a picture on your machine. A prompt with no portrait draws a reference first. Meshy and Tripo need a key in Settings. Import reads a model already on your machine.</p>
   `;
 }
 
@@ -1058,24 +1060,33 @@ function characterMesh(person) {
   if (state.meshId && !meshes.some((mesh) => mesh.id === state.meshId)) state.meshId = null;
   const current = meshes.find((mesh) => mesh.id === state.meshId) || meshes[0] || null;
   if (current) state.meshId = current.id;
-  const names = { local: "Local", meshy: "Meshy", tripo: "Tripo" };
+  const names = { local: "Local", meshy: "Meshy", tripo: "Tripo", import: "Imported" };
+  const from = { refs: "from references", file: "from a file", prompt: "from prompt" };
   const meta = current
-    ? `${names[current.provider] || current.provider} · ${current.source === "refs" ? "from references" : "from prompt"}`
+    ? `${names[current.provider] || current.provider} · ${from[current.source] || "from prompt"}`
     : "No 3D model yet.";
+  const flags = window.meshFlags ? meshFlags() : { auto: false, wire: false, light: true, large: false };
   const older = meshes.filter((mesh) => !current || mesh.id !== current.id).map((mesh) => `
     <button type="button" class="chip" data-act="select-mesh" data-id="${esc(mesh.id)}">${esc(names[mesh.provider] || mesh.provider)}</button>
   `).join("");
   return `
-    <section class="mesh-panel">
+    <section class="mesh-panel ${current && flags.large ? "large" : ""}">
       <div class="row">
         <p class="rail-kicker">3D model</p>
         <span class="meta">${esc(meta)}</span>
       </div>
       <div class="mesh-view ${current ? "" : "empty"}">
-        ${current ? `<canvas data-mesh-id="${esc(current.id)}" width="640" height="360" aria-label="3D model of ${esc(person.name)}"></canvas>` : `<p class="mesh-empty">Generate a model from a prompt, or from this character's portrait.</p>`}
+        ${current ? `<canvas data-mesh-id="${esc(current.id)}" width="640" height="360" aria-label="3D model of ${esc(person.name)}"></canvas>` : `<p class="mesh-empty">Generate a model, or import a GLB or OBJ file.</p>`}
         <p class="mesh-note"></p>
       </div>
-      ${current ? `<p class="meta">Drag to turn it. Scroll to zoom.</p>
+      ${current ? `<p class="meta">Drag to orbit any way. Shift-drag pans. Alt-drag rolls. Scroll zooms.</p>
+        <div class="row mesh-tools">
+          <button type="button" class="chip" data-act="mesh-reset">Reset view</button>
+          <button type="button" class="chip ${flags.auto ? "on" : ""}" data-act="mesh-auto">Auto-rotate</button>
+          <button type="button" class="chip ${flags.wire ? "on" : ""}" data-act="mesh-wire">Wireframe</button>
+          <button type="button" class="chip ${flags.light ? "on" : ""}" data-act="mesh-light">Lighting</button>
+          <button type="button" class="chip ${flags.large ? "on" : ""}" data-act="mesh-large">${flags.large ? "Close" : "Large view"}</button>
+        </div>
         <div class="row">
           <button type="button" class="ghost" data-act="export-mesh" data-id="${esc(current.id)}" data-format="glb" ${state.busy ? "disabled" : ""}>Export GLB</button>
           <button type="button" class="ghost" data-act="export-mesh" data-id="${esc(current.id)}" data-format="obj" ${state.busy ? "disabled" : ""}>Export OBJ</button>
@@ -2607,6 +2618,42 @@ const actions = {
     state.meshSource = button.dataset.value === "refs" ? "refs" : "prompt";
     render();
   },
+  "import-mesh"(button) {
+    return (async () => {
+      const picked = await rpc("shell.pick_mesh", {});
+      if (!picked || !picked.path) return;
+      await run("Importing the model…", async () => {
+        absorb(await rpc("character.mesh_import", { id: button.dataset.id, path: picked.path }));
+      });
+    })();
+  },
+  "mesh-reset"() {
+    if (window.resetMeshCamera) resetMeshCamera();
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    if (canvas && window.redraw) redraw(canvas);
+  },
+  "mesh-auto"() {
+    meshCamera.auto = !meshCamera.auto;
+    render();
+  },
+  "mesh-wire"() {
+    meshCamera.wire = !meshCamera.wire;
+    render();
+  },
+  "mesh-light"() {
+    meshCamera.light = !meshCamera.light;
+    render();
+  },
+  "mesh-large"() {
+    meshCamera.large = !meshCamera.large;
+    render();
+    const panel = document.querySelector(".mesh-panel");
+    if (meshCamera.large && panel && panel.requestFullscreen) {
+      panel.requestFullscreen().catch(() => {});
+    } else if (!meshCamera.large && document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(() => {});
+    }
+  },
   "gen-mesh"(button) {
     const field = document.getElementById("mesh-prompt");
     const prompt = field ? field.value : (state.meshPrompt || "");
@@ -3607,6 +3654,12 @@ document.addEventListener("input", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && window.meshCamera && meshCamera.large && !state.helpOpen && !state.menuOpen) {
+    meshCamera.large = false;
+    if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
+    render();
+    return;
+  }
   if (event.key === "Escape" && state.helpOpen) {
     state.helpOpen = false;
     render();

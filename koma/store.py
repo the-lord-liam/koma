@@ -532,7 +532,7 @@ class Store:
 
     def list_meshes(self, character_id: str) -> list[dict]:
         return self._all(
-            "SELECT * FROM meshes WHERE character_id = ? ORDER BY created_at DESC",
+            "SELECT * FROM meshes WHERE character_id = ? ORDER BY created_at DESC, rowid DESC",
             (character_id,),
         )
 

@@ -214,6 +214,9 @@ class Window:
         if payload["method"] == "shell.pick_image":
             self._pick_image(payload)
             return
+        if payload["method"] == "shell.pick_mesh":
+            self._pick_mesh(payload)
+            return
         if payload["method"] == "shell.set_title":
             self._set_title(payload)
             return
@@ -257,6 +260,35 @@ class Window:
             image_filter.add_mime_type("image/jpeg")
             image_filter.add_mime_type("image/webp")
             dialog.add_filter(image_filter)
+            path = ""
+            if dialog.run() == self.Gtk.ResponseType.ACCEPT:
+                path = dialog.get_filename() or ""
+            dialog.destroy()
+            self._push({"id": payload["id"], "ok": True, "result": {"path": path}})
+        except Exception as error:
+            traceback.print_exc()
+            self._push({"id": payload["id"], "ok": False, "error": str(error)})
+
+    def _pick_mesh(self, payload: dict) -> None:
+        try:
+            dialog = self.Gtk.FileChooserNative.new(
+                "Choose a 3D model",
+                self.win,
+                self.Gtk.FileChooserAction.OPEN,
+                "Open",
+                "Cancel",
+            )
+            mesh_filter = self.Gtk.FileFilter()
+            mesh_filter.set_name("GLB and OBJ")
+            mesh_filter.add_pattern("*.glb")
+            mesh_filter.add_pattern("*.GLB")
+            mesh_filter.add_pattern("*.obj")
+            mesh_filter.add_pattern("*.OBJ")
+            dialog.add_filter(mesh_filter)
+            any_filter = self.Gtk.FileFilter()
+            any_filter.set_name("All files")
+            any_filter.add_pattern("*")
+            dialog.add_filter(any_filter)
             path = ""
             if dialog.run() == self.Gtk.ResponseType.ACCEPT:
                 path = dialog.get_filename() or ""
