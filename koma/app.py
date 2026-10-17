@@ -12,13 +12,14 @@ from pathlib import Path
 from urllib.parse import unquote
 
 from koma.ai import AIError
-from koma.paths import ROOT, UI_DIR, images_dir, previews_dir
+from koma.paths import ROOT, UI_DIR, images_dir, meshes_dir, previews_dir
 from koma.service import Studio
 
 UI_FILES = {
     "index.html": "text/html; charset=utf-8",
     "app.css": "text/css; charset=utf-8",
     "app.js": "application/javascript; charset=utf-8",
+    "view3d.js": "application/javascript; charset=utf-8",
 }
 MEDIA_TYPES = {"jpg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
 
@@ -184,6 +185,9 @@ class Window:
             elif len(parts) == 2 and parts[0] == "preview" and _safe_media(parts[1]) and parts[1].endswith(".png"):
                 data = (previews_dir() / parts[1]).read_bytes()
                 mime = "image/png"
+            elif len(parts) == 2 and parts[0] == "mesh" and _safe_mesh(parts[1]):
+                data = (meshes_dir() / parts[1]).read_bytes()
+                mime = "model/gltf-binary"
             else:
                 raise FileNotFoundError(path)
         except Exception as error:
@@ -290,6 +294,16 @@ class Window:
         blob = json.dumps(message).replace("<", "\\u003c").replace("\u2028", "\\u2028").replace("\u2029", "\\u2029")
         self.web.run_javascript(f"window.koma && window.koma._recv({blob})", None, None, None)
         return False
+
+
+def _safe_mesh(name: str) -> bool:
+    stem, dot, ext = name.partition(".")
+    return (
+        dot == "."
+        and ext == "glb"
+        and len(stem) == 32
+        and all(char in "0123456789abcdef" for char in stem)
+    )
 
 
 def _safe_media(name: str) -> bool:

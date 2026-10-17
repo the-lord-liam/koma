@@ -1006,7 +1006,44 @@ body[data-studio="1"] .settings { background: #1c1c1e; }
   max-height: calc(100cqh - 80px);
   aspect-ratio: 3 / 2;
 }
+.hero-art.compact {
+  width: min(180px, 40cqw);
+  max-height: 140px;
+}
 .hero-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.mesh-panel {
+  width: min(640px, 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mesh-view {
+  position: relative;
+  width: 100%;
+  height: 340px;
+  background: #2a2a2c;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.mesh-view.empty {
+  height: auto;
+  min-height: 0;
+  background: transparent;
+}
+.mesh-view canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: grab;
+  touch-action: none;
+}
+.mesh-empty, .mesh-note {
+  margin: 0;
+  color: #c7c7cc;
+  font-size: 13px;
+}
+.mesh-view.empty .mesh-empty { color: #8e8e93; }
+.mesh-note:empty { display: none; }
 .hero-name {
   color: #1c1c1e;
   font-size: 28px;
