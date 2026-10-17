@@ -279,9 +279,11 @@ class Window:
                 "Cancel",
             )
             mesh_filter = self.Gtk.FileFilter()
-            mesh_filter.set_name("GLB and OBJ")
+            mesh_filter.set_name("GLB, VRM, and OBJ")
             mesh_filter.add_pattern("*.glb")
             mesh_filter.add_pattern("*.GLB")
+            mesh_filter.add_pattern("*.vrm")
+            mesh_filter.add_pattern("*.VRM")
             mesh_filter.add_pattern("*.obj")
             mesh_filter.add_pattern("*.OBJ")
             dialog.add_filter(mesh_filter)
