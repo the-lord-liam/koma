@@ -6,6 +6,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 import shutil
 import subprocess
 import tempfile
@@ -211,6 +212,7 @@ class Studio:
             "primaryRefId": row.get("primary_ref_id"),
             "refs": self._refs_out("character", row["id"], row.get("primary_ref_id")),
             "meshes": self._meshes_out(row["id"]),
+            "poses": self._poses_out(row["id"]),
         }
 
     def _meshes_out(self, character_id: str) -> list[dict]:
@@ -226,6 +228,26 @@ class Studio:
                     "url": f"koma:///mesh/{name}",
                     "thumb": media_url(mesh.get("thumb_path")) if mesh.get("thumb_path") else "",
                     "createdAt": mesh["created_at"],
+                }
+            )
+        return items
+
+    def _poses_out(self, character_id: str) -> list[dict]:
+        items = []
+        for pose in self.store.list_poses(character_id):
+            try:
+                payload = json.loads(pose.get("bones_json") or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            rotations = payload.get("rotations") if isinstance(payload.get("rotations"), dict) else {}
+            items.append(
+                {
+                    "id": pose["id"],
+                    "name": pose["name"],
+                    "rotations": rotations,
+                    "shape": str(payload.get("shape") or ""),
                 }
             )
         return items
@@ -1754,6 +1776,46 @@ class Studio:
         piece = data[offset : offset + 1_500_000]
         return {"glb": base64.b64encode(piece).decode("ascii"), "offset": offset, "total": total}
 
+    def character_pose_save(self, params: dict) -> dict:
+        character = self.store.get_character(params["id"])
+        name = _clip(params.get("name"), 40).strip()
+        if not name:
+            raise ValueError("Name the pose first.")
+        rotations = params.get("rotations") or {}
+        if not isinstance(rotations, dict):
+            raise ValueError("That pose could not be saved.")
+        if len(rotations) > 80:
+            raise ValueError("That pose has too many bones.")
+        cleaned: dict[str, list[float]] = {}
+        for key, value in rotations.items():
+            bone = _clip(str(key), 48).strip()
+            if not bone or not isinstance(value, (list, tuple)) or len(value) != 4:
+                raise ValueError("That pose has a bone Koma cannot store.")
+            try:
+                quat = [float(value[0]), float(value[1]), float(value[2]), float(value[3])]
+            except (TypeError, ValueError):
+                raise ValueError("That pose has a bone Koma cannot store.") from None
+            if not all(math.isfinite(number) for number in quat):
+                raise ValueError("That pose has a bone Koma cannot store.")
+            length = math.sqrt(sum(number * number for number in quat))
+            if length < 1e-6:
+                raise ValueError("That pose has a bone Koma cannot store.")
+            cleaned[bone] = [number / length for number in quat]
+        shape = _clip(params.get("shape") or "", 40).strip()
+        if not any(row["name"] == name for row in self.store.list_poses(character["id"])):
+            if len(self.store.list_poses(character["id"])) >= 40:
+                raise ValueError("This character already has 40 saved poses.")
+        self.store.save_pose(character["id"], name, json.dumps({"rotations": cleaned, "shape": shape}))
+        self.store.touch(character["project_id"])
+        return self._pack(character["project_id"])
+
+    def character_pose_delete(self, params: dict) -> dict:
+        pose = self.store.get_pose(params["id"])
+        character = self.store.get_character(pose["character_id"])
+        self.store.delete_pose(pose["id"])
+        self.store.touch(character["project_id"])
+        return self._pack(character["project_id"])
+
     def character_mesh_thumb(self, params: dict) -> dict:
         mesh = self.store.get_mesh(params["id"])
         character = self.store.get_character(mesh["character_id"])
@@ -2954,6 +3016,8 @@ ROUTES = {
     "character.mesh_bytes": Studio.character_mesh_bytes,
     "character.mesh_thumb": Studio.character_mesh_thumb,
     "character.mesh_shot": Studio.character_mesh_shot,
+    "character.pose_save": Studio.character_pose_save,
+    "character.pose_delete": Studio.character_pose_delete,
     "location.create": Studio.location_create,
     "location.update": Studio.location_update,
     "location.delete": Studio.location_delete,
