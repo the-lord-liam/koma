@@ -274,7 +274,7 @@ function paintHelp() {
         <li><kbd>[</kbd> <kbd>]</kbd> Move the selected panel earlier or later</li>
         <li><kbd>Delete</kbd> Delete the selected panel</li>
         <li><kbd>←</kbd> <kbd>→</kbd> Turn the page in Read</li>
-        <li>3D model: drag orbits, Shift-drag pans, Alt-drag rolls, scroll zooms</li>
+        <li>3D model: drag orbits, Shift-drag pans, Alt-drag rolls, scroll zooms. Grid, background, and Save this angle sit under the model</li>
       </ul>
       <p class="meta">Drag a page in the list, or a panel on the sheet, to reorder it. The Earlier and Later buttons do the same. The last 20 edits on a page stay on disk.</p>
       <button type="button" class="ghost" data-act="close-help">Close</button>
@@ -976,13 +976,19 @@ function renderCast() {
   if (state.charId && !people.some((person) => person.id === state.charId)) state.charId = null;
   const selected = people.find((person) => person.id === state.charId) || people[0] || null;
   if (selected) state.charId = selected.id;
-  const list = people.map((person) => `
+  const list = people.map((person) => {
+    const thumb = (person.meshes || []).map((mesh) => mesh.thumb).find(Boolean) || "";
+    return `
     <button type="button" class="person ${selected && person.id === selected.id ? "on" : ""}" data-act="select-character" data-id="${esc(person.id)}">
-      <strong>${esc(person.name)}</strong>
-      <div class="meta">${esc(person.role || "No role")}</div>
-      ${person.primaryRefId ? "" : `<div class="badge">No portrait</div>`}
+      ${thumb ? `<img class="person-mesh" src="${esc(thumb)}" alt="">` : ""}
+      <span class="person-copy">
+        <strong>${esc(person.name)}</strong>
+        <div class="meta">${esc(person.role || "No role")}</div>
+        ${person.primaryRefId ? "" : `<div class="badge">No portrait</div>`}
+      </span>
     </button>
-  `).join("");
+  `;
+  }).join("");
   const form = selected ? characterFields(selected) : `<p class="meta">Add a character. A portrait is the face later panels follow.</p>`;
   const stage = selected ? characterStage(selected) : `<div class="stage"><div class="empty">Add a character to start the cast.</div></div>`;
   const rail = `
@@ -1065,7 +1071,13 @@ function characterMesh(person) {
   const meta = current
     ? `${names[current.provider] || current.provider} · ${from[current.source] || "from prompt"}`
     : "No 3D model yet.";
-  const flags = window.meshFlags ? meshFlags() : { auto: false, wire: false, light: true, large: false };
+  const flags = window.meshFlags ? meshFlags() : { auto: false, wire: false, light: true, large: false, grid: false, backdrop: "dark", shape: "", angle: "" };
+  const shapes = (window.meshCamera && meshCamera.shapeNames) || [];
+  const shapeRow = shapes.length ? `
+        <div class="row mesh-tools mesh-shapes">
+          <button type="button" class="chip ${flags.shape ? "" : "on"}" data-act="mesh-shape" data-value="">Rest</button>
+          ${shapes.map((name) => `<button type="button" class="chip ${flags.shape === name ? "on" : ""}" data-act="mesh-shape" data-value="${esc(name)}">${esc(name)}</button>`).join("")}
+        </div>` : "";
   const older = meshes.filter((mesh) => !current || mesh.id !== current.id).map((mesh) => `
     <button type="button" class="chip" data-act="select-mesh" data-id="${esc(mesh.id)}">${esc(names[mesh.provider] || mesh.provider)}</button>
   `).join("");
@@ -1076,18 +1088,27 @@ function characterMesh(person) {
         <span class="meta">${esc(meta)}</span>
       </div>
       <div class="mesh-view ${current ? "" : "empty"}">
-        ${current ? `<canvas data-mesh-id="${esc(current.id)}" data-mesh-url="${esc(current.url)}" width="640" height="360" aria-label="3D model of ${esc(person.name)}"></canvas>` : `<p class="mesh-empty">Generate a model, or import a GLB, VRM, or OBJ file.</p>`}
+        ${current ? `<canvas data-mesh-id="${esc(current.id)}" data-mesh-url="${esc(current.url)}" data-has-thumb="${current.thumb ? "1" : ""}" width="640" height="360" aria-label="3D model of ${esc(person.name)}"></canvas>` : `<p class="mesh-empty">Generate a model, or import a GLB, VRM, or OBJ file.</p>`}
         <p class="mesh-note"></p>
       </div>
       ${current ? `<p class="meta">Drag to orbit any way. Shift-drag pans. Alt-drag rolls. Scroll zooms.</p>
+        ${shapeRow}
+        ${shapes.length ? `<p class="meta">Expressions move morph targets. The skeleton stays in the bind pose. Front, side, and three-quarter turn the camera.</p>` : ""}
         <div class="row mesh-tools">
+          <button type="button" class="chip ${flags.angle === "front" ? "on" : ""}" data-act="mesh-angle" data-value="front">Front</button>
+          <button type="button" class="chip ${flags.angle === "side" ? "on" : ""}" data-act="mesh-angle" data-value="side">Side</button>
+          <button type="button" class="chip ${flags.angle === "three" ? "on" : ""}" data-act="mesh-angle" data-value="three">Three-quarter</button>
           <button type="button" class="chip" data-act="mesh-reset">Reset view</button>
           <button type="button" class="chip ${flags.auto ? "on" : ""}" data-act="mesh-auto">Auto-rotate</button>
           <button type="button" class="chip ${flags.wire ? "on" : ""}" data-act="mesh-wire">Wireframe</button>
           <button type="button" class="chip ${flags.light ? "on" : ""}" data-act="mesh-light">Lighting</button>
+          <button type="button" class="chip ${flags.grid ? "on" : ""}" data-act="mesh-grid">Grid</button>
+          <button type="button" class="chip ${flags.backdrop === "light" ? "on" : ""}" data-act="mesh-ground">${flags.backdrop === "light" ? "Dark ground" : "Light ground"}</button>
           <button type="button" class="chip ${flags.large ? "on" : ""}" data-act="mesh-large">${flags.large ? "Close" : "Large view"}</button>
         </div>
         <div class="row">
+          <button type="button" class="ghost" data-act="mesh-shot" data-id="${esc(person.id)}" data-mesh="${esc(current.id)}" ${state.busy ? "disabled" : ""}>Save this angle</button>
+          <button type="button" class="ghost" data-act="mesh-shot" data-id="${esc(person.id)}" data-mesh="${esc(current.id)}" data-panel="${esc(state.panelId || "")}" ${state.busy || !state.panelId ? "disabled" : ""}>Use on panel</button>
           <button type="button" class="ghost" data-act="export-mesh" data-id="${esc(current.id)}" data-format="glb" ${state.busy ? "disabled" : ""}>Export GLB</button>
           <button type="button" class="ghost" data-act="export-mesh" data-id="${esc(current.id)}" data-format="obj" ${state.busy ? "disabled" : ""}>Export OBJ</button>
           <button type="button" class="danger" data-act="delete-mesh" data-id="${esc(current.id)}" ${state.busy ? "disabled" : ""}>Delete model</button>
@@ -2645,6 +2666,57 @@ const actions = {
   "mesh-light"() {
     meshCamera.light = !meshCamera.light;
     render();
+  },
+  "mesh-grid"() {
+    meshCamera.grid = !meshCamera.grid;
+    render();
+  },
+  "mesh-ground"() {
+    meshCamera.backdrop = meshCamera.backdrop === "light" ? "dark" : "light";
+    render();
+  },
+  "mesh-shape"(button) {
+    meshCamera.shape = button.dataset.value || "";
+    render();
+  },
+  "mesh-angle"(button) {
+    const angle = button.dataset.value || "";
+    meshCamera.angle = angle;
+    meshCamera.panX = 0;
+    meshCamera.panY = 0;
+    meshCamera.roll = 0;
+    if (angle === "front") {
+      meshCamera.yaw = 0;
+      meshCamera.pitch = 0.05;
+    } else if (angle === "side") {
+      meshCamera.yaw = Math.PI / 2;
+      meshCamera.pitch = 0.05;
+    } else if (angle === "three") {
+      meshCamera.yaw = 0.62;
+      meshCamera.pitch = 0.28;
+    }
+    render();
+  },
+  "mesh-shot"(button) {
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    if (!canvas || canvas.dataset.ready !== "1") {
+      toast("The model is still loading.");
+      return;
+    }
+    let png = "";
+    try {
+      png = canvas.toDataURL("image/png");
+    } catch (_error) {
+      toast("Could not read the view.");
+      return;
+    }
+    const panelId = button.dataset.panel || "";
+    return run("Saving this angle…", async () => {
+      absorb(await rpc("character.mesh_shot", { id: button.dataset.mesh, png, panelId }));
+      const person = (state.tree.characters || []).find((item) => item.id === button.dataset.id);
+      const pose = person && person.refs.find((ref) => ref.label === "3D angle");
+      if (pose) state.refId = pose.id;
+    });
   },
   "mesh-large"() {
     meshCamera.large = !meshCamera.large;

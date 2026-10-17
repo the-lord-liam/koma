@@ -1385,6 +1385,102 @@ class CoreTests(unittest.TestCase):
         self.assertFalse(Path(obj_path).exists())
         self.assertEqual(self.store.list_meshes(character_id), [])
 
+    def test_mesh_expression_snapshot_and_thumbnail(self):
+        import base64
+        import struct
+
+        from koma.mesh import _assemble, _chunks, apply_morph, blend_shape_names, cube_glb, read_morph
+
+        document, blob = _chunks(cube_glb())
+        deltas = b"".join(struct.pack("<3f", 0.0, 0.5, 0.0) for _ in range(8))
+        start = len(blob)
+        blob = blob + deltas
+        document["buffers"][0]["byteLength"] = len(blob)
+        document["bufferViews"].append({"buffer": 0, "byteOffset": start, "byteLength": len(deltas)})
+        document["accessors"].append(
+            {"bufferView": len(document["bufferViews"]) - 1, "componentType": 5126, "count": 8, "type": "VEC3"}
+        )
+        document["meshes"][0]["primitives"][0]["targets"] = [{"POSITION": len(document["accessors"]) - 1}]
+        document["meshes"][0]["extras"] = {"targetNames": ["Blink"]}
+        document["extensions"] = {
+            "VRM": {
+                "blendShapeMaster": {
+                    "blendShapeGroups": [
+                        {"name": "Neutral", "presetName": "neutral", "binds": [{"mesh": 0, "index": 0, "weight": 0}]},
+                        {"name": "Blink", "presetName": "blink", "binds": [{"mesh": 0, "index": 0, "weight": 100}]},
+                    ]
+                }
+            }
+        }
+        morphed = _assemble(document, blob)
+        self.assertEqual(blend_shape_names(morphed), ["Blink"])
+        self.assertEqual(blend_shape_names(cube_glb()), [])
+        raw = read_morph(morphed)
+        self.assertAlmostEqual(raw[0][1], 0.5)
+        moved = apply_morph([(0.0, 0.0, 0.0)], raw, 1)
+        self.assertAlmostEqual(moved[0][1], 0.5)
+        self.assertEqual(apply_morph([(1.0, 2.0, 3.0)], [], 1), [(1.0, 2.0, 3.0)])
+
+        created = self.studio.project_create({"title": "Angles", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        chapter = self.studio.chapter_create({"projectId": project_id})["tree"]["chapters"][0]
+        page = self.studio.page_create({"chapterId": chapter["id"], "layout": "full"})["tree"]["chapters"][0]["pages"][0]
+        panel_id = page["panels"][0]["id"]
+        made = self.studio.character_create({"projectId": project_id, "name": "Aki"})
+        character_id = made["tree"]["characters"][-1]["id"]
+        model = Path(self.tmp.name) / "blink.glb"
+        model.write_bytes(morphed)
+        imported = self.studio.character_mesh_import({"id": character_id, "path": str(model)})
+        mesh = imported["tree"]["characters"][-1]["meshes"][0]
+        self.assertEqual(mesh["thumb"], "")
+
+        image = Image.new("RGBA", (16, 16), (20, 180, 40, 255))
+        buffer = io.BytesIO()
+        image.save(buffer, format="PNG")
+        png = base64.b64encode(buffer.getvalue()).decode("ascii")
+        with self.assertRaises(ValueError):
+            self.studio.character_mesh_shot({"id": mesh["id"], "png": base64.b64encode(b"not a png").decode("ascii")})
+
+        thumb = self.studio.character_mesh_thumb({"id": mesh["id"], "png": png})
+        shown = thumb["tree"]["characters"][-1]["meshes"][0]
+        self.assertTrue(shown["thumb"].startswith("koma:///media/"))
+        self.assertTrue(shown["thumb"].endswith(".png"))
+        thumb_path = self.store.get_mesh(mesh["id"])["thumb_path"]
+        self.assertTrue(Path(thumb_path).is_file())
+        self.assertEqual(self.store.list_refs("character", character_id), [])
+
+        shot = self.studio.character_mesh_shot({"id": mesh["id"], "png": png, "panelId": panel_id})
+        person = shot["tree"]["characters"][-1]
+        pose = next(ref for ref in person["refs"] if ref["label"] == "3D angle")
+        self.assertEqual(pose["kind"], "poses")
+        self.assertNotEqual(person["primaryRefId"], pose["id"])
+        pose_path = self.store.get_ref(pose["id"])["image_path"]
+        self.assertTrue(Path(pose_path).is_file())
+        replaced = self.store.get_mesh(mesh["id"])["thumb_path"]
+        self.assertTrue(Path(replaced).is_file())
+        self.assertFalse(Path(thumb_path).exists())
+        panel = shot["tree"]["chapters"][0]["pages"][0]["panels"][0]
+        self.assertEqual(panel["refs"][0]["label"], "3D angle")
+        self.assertEqual(panel["refs"][0]["kind"], "reference")
+        panel_path = self.store.list_refs("panel", panel_id)[0]["image_path"]
+        self.assertNotEqual(panel_path, pose_path)
+
+        other = self.studio.project_create({"title": "Other", "premise": ""})
+        other_id = other["tree"]["project"]["id"]
+        other_chapter = self.studio.chapter_create({"projectId": other_id})["tree"]["chapters"][0]
+        other_page = self.studio.page_create({"chapterId": other_chapter["id"], "layout": "full"})
+        other_panel = other_page["tree"]["chapters"][0]["pages"][0]["panels"][0]["id"]
+        with self.assertRaises(ValueError) as wrong_book:
+            self.studio.character_mesh_shot({"id": mesh["id"], "png": png, "panelId": other_panel})
+        self.assertIn("another book", str(wrong_book.exception))
+
+        glb_path = self.store.get_mesh(mesh["id"])["glb_path"]
+        self.studio.project_delete({"id": project_id})
+        self.assertFalse(Path(glb_path).exists())
+        self.assertFalse(Path(replaced).exists())
+        self.assertFalse(Path(pose_path).exists())
+        self.assertFalse(Path(panel_path).exists())
+
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
 
