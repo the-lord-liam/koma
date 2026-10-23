@@ -541,6 +541,7 @@ const meshCamera = window.meshCamera = {
   angle: "",
   thumbFor: {},
   poseMode: false,
+  showBones: true,
   pose: {},
   bones: [],
   boneKey: "",
@@ -555,14 +556,23 @@ const meshCamera = window.meshCamera = {
 };
 let meshSpin = 0;
 
-function resetMeshCamera() {
-  meshCamera.yaw = 0.7;
-  meshCamera.pitch = 0.42;
+function facingYaw(geom) {
+  if (!geom || !geom.rig || !geom.humanoid || !geom.humanoid.hips) return 0;
+  const worlds = geom._bindWorlds || boneWorlds(geom, {});
+  const forward = modelAxes(geom, worlds).forward;
+  const yaw = Math.atan2(-forward[0], forward[2]);
+  return Number.isFinite(yaw) ? yaw : 0;
+}
+
+function resetMeshCamera(geom) {
+  const front = facingYaw(geom);
+  meshCamera.yaw = front - 0.62;
+  meshCamera.pitch = 0.16;
   meshCamera.roll = 0;
   meshCamera.dist = meshCamera.baseDist || 3.2;
   meshCamera.panX = 0;
   meshCamera.panY = 0;
-  meshCamera.angle = "";
+  meshCamera.angle = geom && geom.humanoid ? "three" : "";
 }
 
 function meshFlags() {
@@ -576,6 +586,7 @@ function meshFlags() {
     shape: meshCamera.shape,
     angle: meshCamera.angle,
     poseMode: meshCamera.poseMode,
+    showBones: meshCamera.showBones !== false,
     selected: meshCamera.selected || "",
   };
 }
@@ -618,7 +629,7 @@ function showMesh(canvas, geom) {
   if (meshCamera.meshId !== id) {
     meshCamera.meshId = id;
     meshCamera.baseDist = useGl ? Math.max(1.2, span / Math.tan(0.35) / 0.72) : Math.max(1.2, span * 2.15);
-    resetMeshCamera();
+    resetMeshCamera(geom);
   }
   canvas._geom = geom;
   canvas._orbit = meshCamera;
@@ -1876,7 +1887,7 @@ function markerPoints(geom) {
 }
 
 function gizmoLines(geom) {
-  if (!meshCamera.poseMode || !meshCamera.selected || !geom.humanoid) return [];
+  if (!meshCamera.poseMode || meshCamera.showBones === false || !meshCamera.selected || !geom.humanoid) return [];
   const node = geom.humanoid[meshCamera.selected];
   const matrix = geom._worlds && geom._worlds[node];
   if (!matrix) return [];
@@ -1900,7 +1911,7 @@ function gizmoLines(geom) {
 }
 
 function paintPose(ctx, canvas) {
-  if (!meshCamera.poseMode || !canvas._geom) return;
+  if (!meshCamera.poseMode || meshCamera.showBones === false || !canvas._geom) return;
   const geom = canvas._geom;
   ctx.save();
   for (const marker of geom.markers || []) {
@@ -1925,7 +1936,7 @@ function paintPose(ctx, canvas) {
 
 function paintPoseGl(gl, canvas) {
   const geom = canvas._geom;
-  if (!meshCamera.poseMode || !geom) return;
+  if (!meshCamera.poseMode || meshCamera.showBones === false || !geom) return;
   const lines = [];
   for (const marker of geom.markers || []) {
     const s = Math.max((geom.half && geom.half[1]) || 0.2, 0.05) * 0.03;
@@ -2004,7 +2015,7 @@ function pickAxis(canvas, point) {
 
 function pickBone(canvas, point) {
   const geom = canvas._geom;
-  if (!geom || !geom.markers) return "";
+  if (meshCamera.showBones === false || !geom || !geom.markers) return "";
   let best = "";
   let bestDist = 22;
   for (const marker of geom.markers) {
@@ -2409,10 +2420,10 @@ function presetTargets(name) {
       leftLowerLeg: down, rightLowerLeg: down,
       leftFoot: (axes) => mix(axes, [["forward", 0.96], ["up", -0.28]]),
       rightFoot: (axes) => mix(axes, [["forward", 0.96], ["up", -0.28]]),
-      leftUpperArm: (axes) => mix(axes, [["up", -0.78], ["forward", 0.5], ["right", -0.28]]),
-      rightUpperArm: (axes) => mix(axes, [["up", -0.78], ["forward", 0.5], ["right", 0.28]]),
-      leftLowerArm: (axes) => mix(axes, [["forward", 0.9], ["up", -0.25], ["right", -0.2]]),
-      rightLowerArm: (axes) => mix(axes, [["forward", 0.9], ["up", -0.25], ["right", 0.2]]),
+      leftUpperArm: (axes) => mix(axes, [["up", -0.9], ["forward", 0.28], ["right", -0.16]]),
+      rightUpperArm: (axes) => mix(axes, [["up", -0.9], ["forward", 0.28], ["right", 0.16]]),
+      leftLowerArm: (axes) => mix(axes, [["up", -0.78], ["forward", 0.55], ["right", 0.22]]),
+      rightLowerArm: (axes) => mix(axes, [["up", -0.78], ["forward", 0.55], ["right", -0.22]]),
     },
     point: {
       rightUpperArm: (axes) => mix(axes, [["forward", 0.82], ["up", 0.2], ["right", 0.4]]),
@@ -2433,10 +2444,10 @@ function presetTargets(name) {
       rightUpperLeg: (axes) => mix(axes, [["up", -0.88], ["forward", -0.35]]),
       leftLowerLeg: (axes) => mix(axes, [["up", -0.98], ["forward", 0.12]]),
       rightLowerLeg: (axes) => mix(axes, [["up", -0.55], ["forward", -0.8]]),
-      leftUpperArm: (axes) => mix(axes, [["forward", 0.55], ["up", 0.35], ["right", -0.55]]),
-      rightUpperArm: (axes) => mix(axes, [["forward", 0.45], ["up", 0.45], ["right", 0.65]]),
-      leftLowerArm: (axes) => mix(axes, [["up", 0.85], ["forward", 0.35], ["right", -0.15]]),
-      rightLowerArm: (axes) => mix(axes, [["up", 0.9], ["forward", 0.25]]),
+      leftUpperArm: (axes) => mix(axes, [["up", -0.55], ["forward", 0.48], ["right", -0.68]]),
+      rightUpperArm: (axes) => mix(axes, [["up", -0.5], ["forward", 0.48], ["right", 0.7]]),
+      leftLowerArm: (axes) => mix(axes, [["up", 0.58], ["forward", 0.62], ["right", 0.48]]),
+      rightLowerArm: (axes) => mix(axes, [["up", 0.58], ["forward", 0.62], ["right", -0.48]]),
     },
   };
   return table[name] || null;

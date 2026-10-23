@@ -82,50 +82,50 @@ Each character can have a 3D model as well as a portrait. Generate it from a pro
 
 The viewer ships with Koma. It does not load three.js, `<model-viewer>`, or anything else from a CDN, so it works with no network. It draws the model's base color, so a toon texture shows up instead of a flat stand-in. Separate parts are placed where the file puts them. The camera fits the model's height, width, and depth, so a tall character or a long animal stays in frame. Drag orbits freely, including upside down. Shift-drag pans, Alt-drag rolls, and scroll zooms. Reset view puts the camera back. Auto-rotate spins the model until you turn it off. Wireframe and Lighting can be on together or one at a time. Grid draws a floor under the figure. Light ground switches the backdrop. Large view fills the window; Close, or Escape, leaves it. On a desktop that allows it, Large view also asks the window to go fullscreen.
 
-Sendagaya Shino (CC0) in the viewer. Grid and lighting are on, and the camera and display controls sit beside the model.
+Sendagaya Shino (CC0) in the viewer, from a three-quarter front. Grid and lighting are on, and the camera and display controls sit beside the model. The pose handles are hidden.
 
 <p align="center">
-  <img src="docs/3d-viewer.png" width="900" alt="3D viewer on Sendagaya Shino, three-quarter view, with camera and display controls">
+  <img src="docs/3d-viewer.png" width="900" alt="3D viewer on Sendagaya Shino, three-quarter front, grid and lighting on, pose handles hidden">
 </p>
 
 ### Textures
 
 The viewer draws the texture packed in the file, so a toon model keeps its painted face and clothes.
 
-The same model, closer. The sailor uniform and the face shading are the texture from the file.
+The same model, head and shoulders. The painted face and the sailor uniform are the texture from the file.
 
 <p align="center">
-  <img src="docs/3d-texture.png" width="420" alt="Close view of Sendagaya Shino's painted face and sailor uniform">
+  <img src="docs/3d-texture.png" width="360" alt="Head and shoulders of Sendagaya Shino, painted face and sailor uniform">
 </p>
 
 ### Expressions
 
 Expression buttons add the model's morph targets (a VRM blink or a vowel shape). An expression can stay on while the pose changes.
 
-Joy. The eyes close and the mouth turns up. The pose stays put.
+Rest, Joy, and Surprised, still head and shoulders. Joy narrows the eyes and lifts the mouth. Surprised opens the eyes and the mouth.
 
 <p align="center">
-  <img src="docs/3d-expression.png" width="420" alt="Joy expression on Sendagaya Shino, eyes closed in a smile">
+  <img src="docs/3d-expression.png" width="900" alt="Sendagaya Shino, head and shoulders: Rest, Joy, and Surprised">
 </p>
 
 ### Posing
 
-Pose mode bends a rigged GLB or VRM. Pick a bone in the list, grouped by body part, or click it on the model, then drag the red, green, and blue handles or move the X, Y, and Z sliders. T / A pose puts back the bind pose stored in the file, which is a T-pose or an A-pose depending on how the model was rigged. Standing, walking, running, sitting, pointing, arms crossed, and fighting stance aim the limbs. VRM files use the humanoid bone map. A rig without that map is matched from bone names such as `LeftUpperArm` or `mixamorig:LeftArm`. Save pose stores the bone rotations and the current expression in the library under that character. Load puts them back. Nothing about posing is uploaded.
+Pose mode bends a rigged GLB or VRM. Pick a bone in the list, grouped by body part, or click it on the model, then drag the red, green, and blue handles or move the X, Y, and Z sliders. Show bones turns those markers and handles off when you want a clean view. It starts on. T / A pose puts back the bind pose stored in the file, which is a T-pose or an A-pose depending on how the model was rigged. Standing, walking, running, sitting, pointing, arms crossed, and fighting stance aim the limbs. VRM files use the humanoid bone map. A rig without that map is matched from bone names such as `LeftUpperArm` or `mixamorig:LeftArm`. Save pose stores the bone rotations and the current expression in the library under that character. Load puts them back. Nothing about posing is uploaded.
 
-Four poses on Sendagaya Shino. Standing hangs the arms. Sitting folds the knees forward and sets the feet down. Fighting stance steps one leg in and brings the hands up. Pointing reaches one arm out and leaves the other down.
+Four poses on Sendagaya Shino, from a three-quarter front, with the floor and lighting on. Standing hangs the arms. Sitting rests the hands on the lap and folds the knees forward. Fighting holds a guard: fists near the chin, elbows bent, one foot forward. Pointing reaches one arm out and leaves the other down.
 
 <p align="center">
-  <img src="docs/3d-pose-grid.png" width="900" alt="Sendagaya Shino standing, sitting, in a fighting stance, and pointing">
+  <img src="docs/3d-pose-grid.png" width="420" alt="Sendagaya Shino standing, sitting with hands on the lap, in a fighting guard, and pointing">
 </p>
 
 ### Animation
 
 A model that already has animation clips lists them under the viewer. Play and pause, a loop switch, and 0.5×, 1×, and 2× set the speed. The timeline stops on any frame. Save this angle and Use on panel capture that frame, expression included. Import animation opens a GLB or VRM from your machine and plays it on this rig when the bone names match, or when both files share a humanoid bone map. The imported clip is kept for this visit. It is not written back into the model and it is not uploaded. Root travel on a walk is held in place so the figure stays in frame; the legs still move.
 
-Clip 1 paused at 0.80 seconds, one step into the walk. CesiumMan by Cesium, licensed CC-BY 4.0.
+Clip 1 paused at 0.80 seconds, one step into the walk, from a three-quarter front. CesiumMan by Cesium, licensed CC-BY 4.0.
 
 <p align="center">
-  <img src="docs/3d-animation.png" width="900" alt="CesiumMan walk paused at 0.80 seconds, with the animation timeline open">
+  <img src="docs/3d-animation.png" width="900" alt="CesiumMan walk paused at 0.80 seconds, three-quarter front, timeline open">
 </p>
 
 Save this angle writes a PNG of the posed model, expression included, next to the character's other pictures. It does not upload it. Use on panel copies that picture onto the open panel as a reference, the same way an imported panel reference is used when the panel is drawn. The cast thumbnail is a small copy of the view and is removed with the model. Named poses are rows in the library database, deleted with the character or the project, and they are not sent anywhere. Export GLB and Export OBJ write the model you imported or generated. Export posed GLB writes a new file beside those, with the current pose, expression, and animation frame baked into the vertices. The stored model is left as it was.
