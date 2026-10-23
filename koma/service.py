@@ -1935,6 +1935,40 @@ class Studio:
         self.store.touch(character["project_id"])
         return self._pack(character["project_id"])
 
+    def character_mesh_turntable(self, params: dict) -> dict:
+        """Write one full turn of the current view as a looping GIF or a PNG sequence."""
+        mesh = self.store.get_mesh(params["id"])
+        character = self.store.get_character(mesh["character_id"])
+        project = self.store.get_project(character["project_id"])
+        kind = str(params.get("kind") or "gif")
+        if kind not in {"gif", "png"}:
+            raise ValueError("Export a GIF or a PNG sequence.")
+        raw_frames = params.get("frames")
+        if not isinstance(raw_frames, list) or not 8 <= len(raw_frames) <= 36:
+            raise ValueError("A turntable needs 8 to 36 frames.")
+        frames = [_turntable_frame(_png_bytes(raw)) for raw in raw_frames]
+        folder = exports_dir(project["title"])
+        stem = f"{safe_slug(character['name'])}-turntable"
+        if kind == "png":
+            dest = folder / stem
+            dest.mkdir(parents=True, exist_ok=True)
+            for old in dest.glob("frame-*.png"):
+                old.unlink()
+            for index, frame in enumerate(frames, start=1):
+                frame.save(dest / f"frame-{index:02d}.png", format="PNG")
+            return {"path": str(dest), "frames": len(frames)}
+        dest = folder / f"{stem}.gif"
+        frames[0].save(
+            dest,
+            format="GIF",
+            save_all=True,
+            append_images=frames[1:],
+            duration=80,
+            loop=0,
+            disposal=2,
+        )
+        return {"path": str(dest), "frames": len(frames)}
+
     def _store_mesh_thumb(self, mesh: dict, data: bytes) -> None:
         self.store.set_mesh_thumb(mesh["id"], str(save_image(_thumb_png(data))))
 
@@ -3230,6 +3264,13 @@ def _posed_parts(ranges_raw: object, images_raw: object, index_count: int) -> tu
     return ranges or None, kept
 
 
+def _turntable_frame(data: bytes) -> Image.Image:
+    with Image.open(io.BytesIO(data)) as image:
+        frame = image.convert("RGB")
+        frame.thumbnail((480, 480), Image.Resampling.LANCZOS)
+        return frame.copy()
+
+
 def _png_bytes(raw: object) -> bytes:
     text = str(raw or "").strip()
     if "," in text and text.startswith("data:"):
@@ -3354,6 +3395,7 @@ ROUTES = {
     "character.mesh_bytes": Studio.character_mesh_bytes,
     "character.mesh_thumb": Studio.character_mesh_thumb,
     "character.mesh_shot": Studio.character_mesh_shot,
+    "character.mesh_turntable": Studio.character_mesh_turntable,
     "character.pose_save": Studio.character_pose_save,
     "character.pose_delete": Studio.character_pose_delete,
     "location.create": Studio.location_create,
