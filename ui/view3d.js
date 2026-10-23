@@ -540,6 +540,7 @@ const meshCamera = window.meshCamera = {
   light: true,
   large: false,
   grid: false,
+  outline: false,
   backdrop: "dark",
   shape: "",
   shapeNames: [],
@@ -590,6 +591,7 @@ function meshFlags() {
     light: meshCamera.light,
     large: meshCamera.large,
     grid: meshCamera.grid,
+    outline: Boolean(meshCamera.outline),
     backdrop: meshCamera.backdrop,
     shape: meshCamera.shape,
     angle: meshCamera.angle,
@@ -1128,6 +1130,35 @@ function paintSeat(ctx, canvas) {
   }
 }
 
+function paintCanvasOutline(ctx, canvas, faces) {
+  const solid = faces.filter((face) => face.alpha >= 0.5);
+  if (!solid.length) return;
+  let cx = 0;
+  let cy = 0;
+  for (const face of solid) {
+    cx += (face.a.x + face.b.x + face.c.x) / 3;
+    cy += (face.a.y + face.b.y + face.c.y) / 3;
+  }
+  cx /= solid.length;
+  cy /= solid.length;
+  const grow = Math.max(2.2, Math.min(canvas.width, canvas.height) * 0.008);
+  ctx.fillStyle = "#0d0d10";
+  for (const face of solid) {
+    const pts = [face.a, face.b, face.c].map((point) => {
+      const dx = point.x - cx;
+      const dy = point.y - cy;
+      const len = Math.hypot(dx, dy) || 1;
+      return { x: point.x + (dx / len) * grow, y: point.y + (dy / len) * grow };
+    });
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    ctx.lineTo(pts[1].x, pts[1].y);
+    ctx.lineTo(pts[2].x, pts[2].y);
+    ctx.closePath();
+    ctx.fill();
+  }
+}
+
 function drawCanvas(canvas) {
   const ctx = canvas.getContext("2d");
   if (!ctx) return;
@@ -1176,6 +1207,7 @@ function drawCanvas(canvas) {
     }
   }
   faces.sort((left, right) => left.z - right.z);
+  if (meshCamera.outline) paintCanvasOutline(ctx, canvas, faces);
   const lit = meshCamera.light;
   const wire = meshCamera.wire;
   for (const face of faces) {
@@ -1207,12 +1239,18 @@ function glProgram(gl) {
     attribute vec2 aUv;
     uniform mat4 uMvp;
     uniform mat4 uModel;
+    uniform float uOutline;
+    uniform float uWidth;
     varying vec3 vNormal;
     varying vec2 vUv;
     void main() {
       vNormal = mat3(uModel) * aNormal;
       vUv = aUv;
-      gl_Position = uMvp * vec4(aPos, 1.0);
+      vec3 n = aNormal;
+      float nl = length(n);
+      n = nl > 0.0001 ? n / nl : vec3(0.0, 0.0, 1.0);
+      vec3 pos = aPos + n * uWidth * uOutline;
+      gl_Position = uMvp * vec4(pos, 1.0);
     }
   `;
   const fs = `
@@ -1220,6 +1258,7 @@ function glProgram(gl) {
     uniform float uLight;
     uniform float uTex;
     uniform float uLine;
+    uniform float uOutline;
     uniform float uAlpha;
     uniform float uCutoff;
     uniform vec3 uColor;
@@ -1227,6 +1266,10 @@ function glProgram(gl) {
     varying vec3 vNormal;
     varying vec2 vUv;
     void main() {
+      if (uOutline > 0.5) {
+        gl_FragColor = vec4(0.05, 0.05, 0.06, 1.0);
+        return;
+      }
       if (uLine > 0.5) {
         gl_FragColor = vec4(uColor, 1.0);
         return;
@@ -1254,6 +1297,8 @@ function glProgram(gl) {
   gl._light = gl.getUniformLocation(program, "uLight");
   gl._tex = gl.getUniformLocation(program, "uTex");
   gl._line = gl.getUniformLocation(program, "uLine");
+  gl._outline = gl.getUniformLocation(program, "uOutline");
+  gl._width = gl.getUniformLocation(program, "uWidth");
   gl._alpha = gl.getUniformLocation(program, "uAlpha");
   gl._cutoff = gl.getUniformLocation(program, "uCutoff");
   gl._color = gl.getUniformLocation(program, "uColor");
@@ -1298,6 +1343,8 @@ function drawGl(canvas) {
   gl.uniformMatrix4fv(gl._model, false, new Float32Array(model));
   gl.uniformMatrix4fv(gl._mvp, false, new Float32Array(mul(projection, mul(view, model))));
   gl.uniform1i(gl._map, 0);
+  gl.uniform1f(gl._outline, 0);
+  gl.uniform1f(gl._width, 0);
   if (meshCamera.grid) drawGridGl(gl, geom);
   drawSeatGl(gl, geom);
   const opaque = [];
@@ -1310,9 +1357,12 @@ function drawGl(canvas) {
   gl.depthMask(true);
   if (!meshCamera.wire || meshCamera.light) {
     for (const range of opaque) drawRange(gl, geom, range, false);
+    if (meshCamera.outline) drawOutlineGl(gl, geom);
     gl.depthMask(false);
     for (const range of blended) drawRange(gl, geom, range, false);
     gl.depthMask(true);
+  } else if (meshCamera.outline) {
+    drawOutlineGl(gl, geom);
   }
   if (meshCamera.wire) {
     gl.uniform1f(gl._line, 1);
@@ -1330,6 +1380,36 @@ function drawGl(canvas) {
     gl.uniform1f(gl._line, 0);
   }
   paintPoseGl(gl, canvas);
+}
+
+function drawOutlineGl(gl, geom) {
+  const span = Math.max((geom.half && Math.max(geom.half[0], geom.half[1], geom.half[2] || 0)) || 0.4, 0.05);
+  gl.enable(gl.CULL_FACE);
+  gl.cullFace(gl.FRONT);
+  gl.depthMask(false);
+  gl.uniform1f(gl._outline, 1);
+  gl.uniform1f(gl._width, span * 0.016);
+  gl.uniform1f(gl._tex, 0);
+  gl.uniform1f(gl._line, 0);
+  gl.uniform1f(gl._light, 0);
+  gl.uniform1f(gl._alpha, 0);
+  for (const range of geom.ranges) {
+    if (!range.buffer) continue;
+    if (materialAt(geom, range.material).alpha === "BLEND") continue;
+    gl.bindBuffer(gl.ARRAY_BUFFER, range.buffer);
+    gl.enableVertexAttribArray(gl._pos);
+    gl.vertexAttribPointer(gl._pos, 3, gl.FLOAT, false, 32, 0);
+    if (gl._normal >= 0) {
+      gl.enableVertexAttribArray(gl._normal);
+      gl.vertexAttribPointer(gl._normal, 3, gl.FLOAT, false, 32, 12);
+    }
+    if (gl._uv >= 0) gl.disableVertexAttribArray(gl._uv);
+    gl.drawArrays(gl.TRIANGLES, 0, range.count);
+  }
+  gl.uniform1f(gl._outline, 0);
+  gl.uniform1f(gl._width, 0);
+  gl.depthMask(true);
+  gl.disable(gl.CULL_FACE);
 }
 
 function drawRange(gl, geom, range, _line) {
