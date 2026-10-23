@@ -2546,6 +2546,24 @@ process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: O
         self.assertIn("turntableFrames", app)
         self.assertIn('"character.mesh_turntable"', (Path(__file__).resolve().parents[1] / "koma" / "service.py").read_text(encoding="utf-8"))
 
+    def test_viewer_toggles_keep_the_model_and_theme_is_shared(self) -> None:
+        import re
+        from pathlib import Path
+
+        root = Path(__file__).resolve().parents[1]
+        app = (root / "ui" / "app.js").read_text(encoding="utf-8")
+        css = (root / "ui" / "app.css").read_text(encoding="utf-8")
+        self.assertIn('data-act="theme"', app)
+        self.assertIn("koma-theme", app)
+        self.assertIn('html[data-theme="light"]', css)
+        self.assertIn("--chip:", css)
+        for name in ("mesh-auto", "mesh-wire", "mesh-light", "mesh-grid", "mesh-outline", "mesh-ground", "mesh-angle"):
+            match = re.search(rf'"{name}"\([^)]*\)\s*\{{(.*?)\n  \}},', app, re.S)
+            self.assertIsNotNone(match, name)
+            body = match.group(1)
+            self.assertIn("paintMeshChrome()", body, name)
+            self.assertNotIn("render()", body, name)
+
     def test_outline_toggle_starts_off_and_is_in_the_viewer(self) -> None:
         from pathlib import Path
 
