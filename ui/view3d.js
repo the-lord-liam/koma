@@ -2548,6 +2548,7 @@ window.boneEuler = boneEuler;
 window.setPoseAxis = setPoseAxis;
 window.refreshMeshPose = refreshMeshPose;
 window.applyPosePreset = applyPosePreset;
+window.applyMirrorPose = applyMirrorPose;
 window.meshPoseInfo = meshPoseInfo;
 window.sampleChannel = sampleChannel;
 window.applyClipFrame = applyClipFrame;
