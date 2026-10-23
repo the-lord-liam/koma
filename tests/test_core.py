@@ -798,6 +798,19 @@ class CoreTests(unittest.TestCase):
             face = font(48, bold=bold)
             self.assertNotEqual(raster(face, "あ"), raster(face, "い"))
 
+    def test_lettering_font_draws_latin(self):
+        from PIL import ImageDraw
+
+        from koma.compose import letter_font
+
+        def raster(text: str) -> bytes:
+            image = Image.new("L", (96, 72), 255)
+            ImageDraw.Draw(image).text((6, 6), text, font=letter_font(48, True, text), fill=0)
+            return image.tobytes()
+
+        self.assertNotEqual(raster("K"), raster("A"))
+        self.assertNotEqual(raster("あ"), raster("い"))
+
     def test_export_slug_keeps_unicode_titles_apart(self):
         from koma.paths import exports_dir, safe_slug
 
@@ -2256,6 +2269,28 @@ process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: O
             self.assertAlmostEqual(item["left"][2], -item["right"][2], delta=0.08)
         for left, right in zip(got["bindRight"], got["restRight"]):
             self.assertAlmostEqual(left, right, delta=0.05)
+
+    def test_long_sound_effect_is_not_cut_off(self):
+        art = Path(self.tmp.name) / "art.png"
+        Image.new("RGB", (80, 120), (240, 240, 240)).save(art)
+        words = "KRAKOOM " * 6
+        full = Path(self.tmp.name) / "full-sfx.png"
+        cut = Path(self.tmp.name) / "cut-sfx.png"
+        panel = {
+            "slot": 0,
+            "image_path": str(art),
+            "dialogue": "",
+            "balloon": "none",
+            "balloon_anchor": "bl",
+            "sfx": words,
+        }
+        render_page("full", "ltr", [panel], "1-1", full, 600, 900)
+        panel["sfx"] = words[:24]
+        render_page("full", "ltr", [panel], "1-1", cut, 600, 900)
+        full_hash = hash(Image.open(full).tobytes())
+        cut_hash = hash(Image.open(cut).tobytes())
+        self.assertNotEqual(full_hash, cut_hash, "long sound effect matched its 24-character prefix")
+        self.assertLess(full.stat().st_size, 300_000)
 
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")

@@ -7,6 +7,7 @@ the page number are drawn here, so the lettering is the author's text.
 from __future__ import annotations
 
 import math
+from functools import lru_cache
 from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
@@ -55,6 +56,67 @@ def font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont | ImageFont.Im
     if path is not None:
         return ImageFont.truetype(str(path), size=size, index=0)
     return ImageFont.load_default()
+
+
+def _is_cjk(ch: str) -> bool:
+    code = ord(ch)
+    return (
+        0x1100 <= code <= 0x11FF
+        or 0x2E80 <= code <= 0x9FFF
+        or 0xAC00 <= code <= 0xD7AF
+        or 0xF900 <= code <= 0xFAFF
+        or 0xFE30 <= code <= 0xFE4F
+        or 0xFF00 <= code <= 0xFFEF
+        or 0x20000 <= code <= 0x3FFFF
+    )
+
+
+def _cjk_candidates(bold: bool) -> list[Path]:
+    found: list[Path] = []
+    paths = (*_CJK_BOLD, *_CJK_REGULAR) if bold else _CJK_REGULAR
+    for path in paths:
+        if path.is_file() and path not in found:
+            found.append(path)
+    return found
+
+
+@lru_cache(maxsize=64)
+def _covers(path: str, sample: str) -> bool:
+    try:
+        face = ImageFont.truetype(path, size=48, index=0)
+    except OSError:
+        return False
+    boxes = [face.getbbox(ch) for ch in sample]
+    return len(set(boxes)) == len(sample)
+
+
+def _open(path: Path, size: int) -> ImageFont.FreeTypeFont:
+    return ImageFont.truetype(str(path), size=size, index=0)
+
+
+def letter_font(size: int, bold: bool, text: str) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    """A face that can draw this string.
+
+    Droid Sans Fallback has kana but draws Latin as the missing-glyph box.
+    Prefer a CJK face that also has Latin (Noto, then WenQuanYi). Latin-only
+    text falls back to DejaVu when every CJK face lacks those letters.
+    """
+    need_cjk = any(_is_cjk(ch) for ch in text)
+    need_latin = any(ch.isascii() and not ch.isspace() for ch in text)
+    if need_cjk and need_latin:
+        for path in _cjk_candidates(bold):
+            if _covers(str(path), "KA") and _covers(str(path), "あい"):
+                return _open(path, size)
+        return font(size, bold=bold)
+    if need_cjk or not need_latin:
+        return font(size, bold=bold)
+    for path in _cjk_candidates(bold):
+        if _covers(str(path), "KA"):
+            return _open(path, size)
+    latin = _FALLBACK_BOLD if bold and _FALLBACK_BOLD.is_file() else _FALLBACK
+    if latin.is_file():
+        return _open(latin, size)
+    return font(size, bold=bold)
 
 
 def _s(value: float, scale: float, minimum: int = 1) -> int:
@@ -121,7 +183,7 @@ def render_page(
     draw = ImageDraw.Draw(page)
     boxes = panel_boxes(layout_id, reading, page_w, page_h, slots)
     by_slot = {int(panel["slot"]): panel for panel in panels}
-    label_font = font(_s(22, scale, 10))
+    label_font = letter_font(_s(22, scale, 10), False, "Panel")
     for index, box in enumerate(boxes):
         panel = by_slot.get(index, {})
         _paste_art(page, box, panel.get("image_path"), index + 1, label_font)
@@ -139,7 +201,7 @@ def render_page(
             scale,
         )
         _sfx(draw, box, panel.get("sfx") or "", panel.get("balloon_anchor") or "tr", scale)
-    number_font = font(_s(20, scale, 10))
+    number_font = letter_font(_s(20, scale, 10), False, page_label)
     draw.text((page_w / 2, page_h - _s(22, scale, 8)), page_label, font=number_font, fill="#222222", anchor="mm")
     out_path.parent.mkdir(parents=True, exist_ok=True)
     page.save(out_path, "PNG")
@@ -175,14 +237,14 @@ def _letter(draw: ImageDraw.ImageDraw, box, text: str, kind: str, anchor: str, s
         return
     x, y, w, h = box
     size = _s(28 if len(text) < 80 else 22, scale, 8)
-    face = font(size)
+    face = letter_font(size, False, text)
     max_w = max(_s(40, scale, 8), int(w * 0.7) - _s(28, scale, 4))
     lines = _wrap(draw, text, face, max_w)
     line_h = size + _s(6, scale, 2)
     floor = _s(16, scale, 8)
     while len(lines) * line_h > h * 0.55 and size > floor:
         size -= 2 if scale == 1.0 else max(1, round(2 * scale))
-        face = font(size)
+        face = letter_font(size, False, text)
         line_h = size + _s(6, scale, 2)
         lines = _wrap(draw, text, face, max_w)
     text_w = max((_length(draw, line, face) for line in lines), default=0)
@@ -270,12 +332,17 @@ def _sfx(draw, box, text: str, balloon_anchor: str, scale: float = 1.0) -> None:
         return
     x, y, w, h = box
     size = max(_s(28, scale, 10), min(_s(72, scale, 16), int(h * 0.16)))
-    face = font(size, bold=True)
+    floor = _s(16, scale, 8)
+    face = letter_font(size, True, text)
+    limit = w * 0.9
+    while size > floor and draw.textlength(text, font=face) > limit:
+        size -= 2
+        face = letter_font(size, True, text)
     if balloon_anchor.startswith("t"):
         pos = (x + w * 0.5, y + h * 0.78)
     else:
         pos = (x + w * 0.5, y + h * 0.28)
-    _stroke(draw, pos, text[:24], face, scale)
+    _stroke(draw, pos, text, face, scale)
 
 
 def _stroke(draw, pos, text: str, face, scale: float = 1.0) -> None:
