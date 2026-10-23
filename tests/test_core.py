@@ -1932,6 +1932,14 @@ class CoreTests(unittest.TestCase):
         mesh_id = imported["tree"]["characters"][-1]["meshes"][0]["id"]
         loaded = self.studio.character_mesh_anim({"id": mesh_id, "path": str(clip_path)})
         self.assertEqual(loaded["clips"][0]["channels"][0]["node"], 2)
+        kept = self.studio.character_mesh_anims({"id": mesh_id})
+        self.assertEqual(kept["clips"][0]["channels"][0]["node"], 2)
+        self.assertEqual(kept["clips"][0]["name"], loaded["clips"][0]["name"])
+        sidecar = Path(self.studio.store.get_mesh(mesh_id)["glb_path"] + ".anims.json")
+        self.assertTrue(sidecar.is_file())
+        again = self.studio.character_mesh_anim({"id": mesh_id, "path": str(clip_path)})
+        self.assertEqual(len(self.studio.character_mesh_anims({"id": mesh_id})["clips"]), 1)
+        self.assertEqual(again["clips"][0]["channels"][0]["node"], 2)
         with self.assertRaises(ValueError):
             self.studio.character_mesh_anim({"id": mesh_id, "path": str(folder / "missing.glb")})
         outside = Path("/etc/passwd")
@@ -1953,6 +1961,8 @@ class CoreTests(unittest.TestCase):
         self.assertAlmostEqual(parse_positions(Path(posed_export["path"]).read_bytes())[2][1], 3.0, places=5)
         stored = Path(self.studio.store.get_mesh(mesh_id)["glb_path"]).read_bytes()
         self.assertEqual(Path(original["path"]).read_bytes(), stored)
+        self.studio.character_mesh_delete({"id": mesh_id})
+        self.assertFalse(sidecar.is_file())
 
         script = r"""
 const fs = require("fs");

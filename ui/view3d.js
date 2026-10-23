@@ -27,6 +27,12 @@ async function loadMesh(canvas, id) {
       }
       geom = parseGlb(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength));
       await decodeImages(geom);
+      try {
+        const saved = await rpc("character.mesh_anims", { id });
+        if (saved && saved.clips && saved.clips.length) attachImportedClips(geom, saved.clips);
+      } catch (_error) {
+        /* A missing sidecar just means this model has no saved clips. */
+      }
       meshGeom.set(id, geom);
       if (meshGeom.size > 2) meshGeom.delete(meshGeom.keys().next().value);
     }
@@ -2396,10 +2402,8 @@ function applyClipFrame(geom) {
   applyPose(geom);
 }
 
-function installAnimationClips(clips) {
-  const canvas = document.querySelector("canvas[data-mesh-id]");
-  const geom = canvas && canvas._geom;
-  if (!geom || !geom.rig) return 0;
+function attachImportedClips(geom, clips) {
+  if (!geom) return 0;
   const imported = (clips || []).map((clip, index) => ({
     name: String((clip && clip.name) || `Imported ${index + 1}`),
     duration: Number(clip && clip.duration) || 0,
@@ -2407,8 +2411,16 @@ function installAnimationClips(clips) {
     imported: true,
   })).filter((clip) => clip.channels.length);
   geom.clips = (geom.clips || []).filter((clip) => !clip.imported).concat(imported);
-  if (!imported.length) return 0;
-  meshCamera.clip = geom.clips.length - imported.length;
+  return imported.length;
+}
+
+function installAnimationClips(clips) {
+  const canvas = document.querySelector("canvas[data-mesh-id]");
+  const geom = canvas && canvas._geom;
+  if (!geom || !geom.rig) return 0;
+  const imported = attachImportedClips(geom, clips);
+  if (!imported) return 0;
+  meshCamera.clip = geom.clips.length - imported;
   meshCamera.time = 0;
   meshCamera.playing = false;
   applyClipFrame(geom);
