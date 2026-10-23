@@ -200,6 +200,7 @@ class Studio:
             "bots": [self._bot_out(row) for row in self.store.list_bots(project_id)],
             "botGroups": [self._group_out(row) for row in self.store.list_groups(project_id)],
             "chapters": chapters,
+            "moods": [ref for ref in self._refs_out("project", project_id, None) if ref["kind"] == "mood"],
             "messages": [
                 {
                     "id": row["id"],
@@ -1108,6 +1109,24 @@ class Studio:
                         "noteId": note["id"],
                         "label": note.get("title") or "Note",
                         "detail": title,
+                    }
+                )
+                if len(hits) >= 40:
+                    return {"hits": hits}
+            for ref in self.store.list_refs("project", project["id"]):
+                if ref.get("kind") != "mood":
+                    continue
+                label = ref.get("label") or ""
+                if query not in label.casefold():
+                    continue
+                hits.append(
+                    {
+                        "kind": "mood",
+                        "projectId": project["id"],
+                        "projectTitle": title,
+                        "refId": ref["id"],
+                        "label": label or "Reference",
+                        "detail": f"{title} · Reference",
                     }
                 )
                 if len(hits) >= 40:
@@ -2022,8 +2041,8 @@ class Studio:
 
     def import_ref(self, params: dict) -> dict:
         owner = params.get("owner")
-        if owner not in {"character", "location", "panel", "page"}:
-            raise ValueError("Choose a character, a place, a page, or a panel.")
+        if owner not in {"character", "location", "panel", "page", "project"}:
+            raise ValueError("Choose a character, a place, a page, a panel, or the reference board.")
         source = Path(str(params.get("path") or "")).expanduser()
         if not source.is_file():
             raise ValueError("Choose an image file.")
@@ -2042,7 +2061,15 @@ class Studio:
             raise
         except Exception:
             raise ValueError("That file is not an image Koma can read.") from None
+        if owner == "project":
+            self.store.get_project(params["id"])
         saved = str(save_image(resolved.read_bytes()))
+        if owner == "project":
+            project = self.store.get_project(params["id"])
+            label = _clip(params.get("label"), 80).strip() or _clip(source.stem, 80).strip() or "Reference"
+            self.store.create_ref("project", project["id"], "mood", label, saved, "Imported from disk.")
+            self.store.touch(project["id"])
+            return self._pack(project["id"])
         if owner in {"panel", "page"}:
             if owner == "panel":
                 panel = self.store.get_panel(params["id"])
@@ -2070,6 +2097,16 @@ class Studio:
             self.store.update_location(location["id"], {"primary_ref_id": ref["id"]}, {"primary_ref_id"})
         self.store.touch(location["project_id"])
         return self._pack(location["project_id"])
+
+    def mood_delete(self, params: dict) -> dict:
+        ref = self.store.get_ref(params["refId"])
+        if ref["owner_kind"] != "project" or ref["kind"] != "mood":
+            raise ValueError("That picture is not on the reference board.")
+        project_id = ref["owner_id"]
+        self.store.get_project(project_id)
+        self.store.delete_ref(ref["id"])
+        self.store.touch(project_id)
+        return self._pack(project_id)
 
     def page_sheet(self, params: dict) -> dict:
         page = self.store.get_page(params["pageId"])
@@ -3221,6 +3258,7 @@ ROUTES = {
     "location.delete": Studio.location_delete,
     "location.generate": Studio.location_generate,
     "ref.import": Studio.import_ref,
+    "mood.delete": Studio.mood_delete,
     "page.sheet": Studio.page_sheet,
     "chapter.sheets": Studio.chapter_sheets,
     "export.page": Studio.export_page,

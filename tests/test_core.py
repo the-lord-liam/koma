@@ -724,6 +724,66 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(self.store._all("SELECT group_id FROM bot_members"), [])
         self.assertEqual(self.store._all("SELECT id FROM refs"), [])
 
+    def test_reference_board_copies_a_local_picture(self):
+        created = self.studio.project_create({"title": "Board", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        self.assertEqual(created["tree"]["moods"], [])
+        other = self.studio.project_create({"title": "Other", "premise": ""})
+        other_id = other["tree"]["project"]["id"]
+        picture = Path(self.tmp.name) / "harbor-night.png"
+        Image.new("RGB", (12, 8), (20, 40, 80)).save(picture)
+        packed = self.studio.import_ref(
+            {
+                "owner": "project",
+                "id": project_id,
+                "path": str(picture),
+                "kind": "portrait",
+                "label": "  Harbor night  ",
+            }
+        )
+        moods = packed["tree"]["moods"]
+        self.assertEqual(len(moods), 1)
+        self.assertEqual(moods[0]["kind"], "mood")
+        self.assertEqual(moods[0]["label"], "Harbor night")
+        self.assertTrue(str(moods[0]["url"]).startswith("koma:///"))
+        stored = self.store.list_refs("project", project_id)[0]["image_path"]
+        self.assertTrue(Path(stored).is_file())
+        self.assertNotEqual(stored, str(picture))
+        self.assertEqual(self.studio.project_open({"id": other_id})["tree"]["moods"], [])
+        hits = self.studio.library_search({"query": "harbor"})
+        self.assertEqual(len(hits["hits"]), 1)
+        self.assertEqual(hits["hits"][0]["kind"], "mood")
+        self.assertEqual(hits["hits"][0]["refId"], moods[0]["id"])
+        self.assertEqual(hits["hits"][0]["projectId"], project_id)
+        person = self.studio.character_create({"projectId": project_id, "name": "Aki"})["tree"]["characters"][0]
+        face = Path(self.tmp.name) / "face.png"
+        Image.new("RGB", (8, 8), (1, 2, 3)).save(face)
+        cast = self.studio.import_ref({"owner": "character", "id": person["id"], "path": str(face), "kind": "portrait"})
+        portrait = cast["tree"]["characters"][0]["refs"][0]
+        with self.assertRaises(ValueError):
+            self.studio.mood_delete({"refId": portrait["id"]})
+        with self.assertRaises(ValueError):
+            self.studio.import_ref({"owner": "project", "id": project_id, "path": "/etc/hostname"})
+        junk = Path(self.tmp.name) / "notes.txt"
+        junk.write_text("nope", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.studio.import_ref({"owner": "project", "id": project_id, "path": str(junk)})
+        unnamed = Path(self.tmp.name) / "street.png"
+        Image.new("RGB", (4, 4), (9, 9, 9)).save(unnamed)
+        named = self.studio.import_ref({"owner": "project", "id": project_id, "path": str(unnamed)})
+        self.assertCountEqual([item["label"] for item in named["tree"]["moods"]], ["Harbor night", "street"])
+        removed = self.studio.mood_delete({"refId": moods[0]["id"]})
+        self.assertFalse(Path(stored).exists())
+        self.assertEqual([item["label"] for item in removed["tree"]["moods"]], ["street"])
+        street = self.store.list_refs("project", project_id)[0]["image_path"]
+        portrait_path = self.store.list_refs("character", person["id"])[0]["image_path"]
+        self.studio.project_delete({"id": project_id})
+        self.assertFalse(Path(street).exists())
+        self.assertFalse(Path(portrait_path).exists())
+        self.assertEqual(self.store.list_refs("project", project_id), [])
+        self.assertTrue(face.is_file())
+        self.assertEqual(self.studio.project_open({"id": other_id})["tree"]["project"]["title"], "Other")
+
     def test_lettering_font_draws_japanese(self):
         from PIL import ImageDraw
 
