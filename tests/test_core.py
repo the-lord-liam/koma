@@ -2153,6 +2153,110 @@ process.stdout.write(JSON.stringify(report));
                     self.assertGreaterEqual(angle, hinge[0] - 0.5, name)
                     self.assertLessEqual(angle, hinge[1] + 0.5, name)
 
+    def test_mirror_copies_left_limbs_to_the_right(self):
+        import subprocess
+
+        script = r"""
+const fs = require("fs");
+const vm = require("vm");
+global.window = global;
+global.document = {
+  querySelector() { return null; },
+  querySelectorAll() { return []; },
+  addEventListener() {},
+  createElement() { return { getContext() { return null; } }; },
+};
+global.performance = { now: () => 0 };
+global.requestAnimationFrame = () => 1;
+vm.runInThisContext(fs.readFileSync("ui/view3d.js", "utf8"));
+
+function figure() {
+  const nodes = [];
+  const parent = [];
+  const humanoid = {};
+  function add(name, parentIndex, t) {
+    const index = nodes.length;
+    nodes.push({ t, r: [0, 0, 0, 1], s: [1, 1, 1], matrix: null });
+    parent.push(parentIndex);
+    if (name) humanoid[name] = index;
+    return index;
+  }
+  const hips = add("hips", -1, [0, 1, 0]);
+  const spine = add("spine", hips, [0, 0.15, 0]);
+  const chest = add("chest", spine, [0, 0.2, 0]);
+  add("neck", chest, [0, 0.2, 0]);
+  add("head", humanoid.neck, [0, 0.15, 0]);
+  const leftUpper = add("leftUpperArm", chest, [-0.2, 0.05, 0]);
+  const leftLower = add("leftLowerArm", leftUpper, [-0.3, 0, 0]);
+  add("leftHand", leftLower, [-0.25, 0, 0]);
+  const rightUpper = add("rightUpperArm", chest, [0.2, 0.05, 0]);
+  const rightLower = add("rightLowerArm", rightUpper, [0.3, 0, 0]);
+  add("rightHand", rightLower, [0.25, 0, 0]);
+  const leftThigh = add("leftUpperLeg", hips, [-0.1, -0.05, 0]);
+  const leftShin = add("leftLowerLeg", leftThigh, [0, -0.4, 0]);
+  add("leftFoot", leftShin, [0, -0.4, 0]);
+  const rightThigh = add("rightUpperLeg", hips, [0.1, -0.05, 0]);
+  const rightShin = add("rightLowerLeg", rightThigh, [0, -0.4, 0]);
+  add("rightFoot", rightShin, [0, -0.4, 0]);
+  const mid = add("leftMiddleProximal", humanoid.leftHand, [-0.08, 0, 0]);
+  add("leftMiddleIntermediate", mid, [-0.06, 0, 0]);
+  add("rightMiddleProximal", humanoid.rightHand, [0.08, 0, 0]);
+  add("rightMiddleIntermediate", humanoid.rightMiddleProximal, [0.06, 0, 0]);
+  return { rig: { nodes, parent }, humanoid };
+}
+
+function pos(geom, worlds, name) {
+  const node = geom.humanoid[name];
+  return [worlds[node][12], worlds[node][13], worlds[node][14]];
+}
+function nrm(v) {
+  const length = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / length, v[1] / length, v[2] / length];
+}
+function limb(geom, worlds, parentName, childName) {
+  return nrm(subVec(pos(geom, worlds, childName), pos(geom, worlds, parentName)));
+}
+function dots(v, axes) {
+  return [dot(v, axes.forward), dot(v, axes.up), dot(v, axes.right)];
+}
+
+const geom = figure();
+const bindWorlds = boneWorlds(geom, {});
+const axes = modelAxes(geom, bindWorlds);
+const step = {};
+aimBone(geom, step, bindWorlds, "leftUpperArm", mix(axes, [["forward", 0.85], ["up", 0.35], ["right", -0.4]]));
+aimBone(geom, step, boneWorlds(geom, step), "leftLowerArm", mix(axes, [["forward", 0.2], ["up", -0.2], ["right", -0.95]]));
+aimBone(geom, step, boneWorlds(geom, step), "leftUpperLeg", mix(axes, [["forward", 0.75], ["up", -0.65]]));
+const pose = mirrorPoseLeftToRight(geom, step);
+const worlds = boneWorlds(geom, pose);
+const pairs = [
+  ["leftUpperArm", "leftLowerArm", "rightUpperArm", "rightLowerArm"],
+  ["leftLowerArm", "leftHand", "rightLowerArm", "rightHand"],
+  ["leftUpperLeg", "leftLowerLeg", "rightUpperLeg", "rightLowerLeg"],
+];
+const report = pairs.map((names) => {
+  const left = dots(limb(geom, worlds, names[0], names[1]), axes);
+  const right = dots(limb(geom, worlds, names[2], names[3]), axes);
+  return { left, right };
+});
+const rest = mirrorPoseLeftToRight(geom, {});
+const restWorlds = boneWorlds(geom, rest);
+const restRight = limb(geom, restWorlds, "rightUpperArm", "rightLowerArm");
+const bindRight = limb(geom, bindWorlds, "rightUpperArm", "rightLowerArm");
+process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: Object.keys(pose).filter((name) => name.startsWith("right")) }));
+"""
+        completed = subprocess.run(["node", "-e", script], cwd="/workspace", capture_output=True, text=True, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        got = json.loads(completed.stdout)
+        self.assertIn("rightUpperArm", got["rightKeys"])
+        self.assertIn("rightUpperLeg", got["rightKeys"])
+        for item in got["report"]:
+            self.assertAlmostEqual(item["left"][0], item["right"][0], delta=0.08)
+            self.assertAlmostEqual(item["left"][1], item["right"][1], delta=0.08)
+            self.assertAlmostEqual(item["left"][2], -item["right"][2], delta=0.08)
+        for left, right in zip(got["bindRight"], got["restRight"]):
+            self.assertAlmostEqual(left, right, delta=0.05)
+
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
 

@@ -287,7 +287,7 @@ function paintHelp() {
         <li><kbd>[</kbd> <kbd>]</kbd> Move the selected panel earlier or later</li>
         <li><kbd>Delete</kbd> Delete the selected panel</li>
         <li><kbd>←</kbd> <kbd>→</kbd> Turn the page in Read</li>
-        <li>3D model: drag orbits, Shift-drag pans, Alt-drag rolls, scroll zooms. Pose rotates a rigged model. Grid, background, and Save this angle sit under the model</li>
+        <li>3D model: drag orbits, Shift-drag pans, Alt-drag rolls, scroll zooms. Pose rotates a rigged model. Mirror copies the left arm and leg onto the right. Grid, background, and Save this angle sit under the model</li>
       </ul>
       <p class="meta">Drag a page in the list, or a panel on the sheet, to reorder it. The Earlier and Later buttons do the same. The last 20 edits on a page stay on disk.</p>
       <button type="button" class="ghost" data-act="close-help">Close</button>
@@ -1220,6 +1220,7 @@ function poseControls(person, current) {
       <button type="button" class="chip on" data-act="mesh-pose">Pose</button>
       <button type="button" class="chip ${flags.showBones !== false ? "on" : ""}" data-act="mesh-bones">Show bones</button>
       ${presets.map(([value, label]) => `<button type="button" class="chip" data-act="mesh-preset" data-value="${value}">${label}</button>`).join("")}
+      <button type="button" class="chip" data-act="mesh-mirror" title="Copy the left arm and leg onto the right">Mirror</button>
     </div>
     <div class="mesh-bones" data-scroll="pose-bones">
       ${body}
@@ -1228,7 +1229,7 @@ function poseControls(person, current) {
     <div class="mesh-sliders">
       ${["x", "y", "z"].map((axis) => `<label>${axis.toUpperCase()} <input type="range" min="-180" max="180" step="1" data-pose-axis="${axis}" value="${euler[axis]}" aria-label="${axis.toUpperCase()} rotation"></label>`).join("")}
     </div>
-    <p class="meta">Click a bone here or on the model. Drag a handle, or use the sliders. Show bones turns the markers and handles on or off, and it starts on. T / A pose restores the file's bind pose.</p>
+    <p class="meta">Click a bone here or on the model. Drag a handle, or use the sliders. Mirror copies the left arm and leg onto the right. Show bones turns the markers and handles on or off, and it starts on. T / A pose restores the file's bind pose.</p>
     <div class="row mesh-tools">
       <input id="pose-name" class="pose-name" type="text" data-save="local" data-field="poseName" data-entity="" value="${esc(state.poseName || "")}" placeholder="Name this pose" maxlength="40">
       <button type="button" class="ghost" data-act="pose-save" data-id="${esc(person.id)}" ${state.busy ? "disabled" : ""}>Save pose</button>
@@ -2847,6 +2848,15 @@ const actions = {
   "mesh-bone"(button) {
     meshCamera.selected = button.dataset.bone || "";
     meshCamera.poseMode = true;
+    render();
+  },
+  "mesh-mirror"() {
+    meshCamera.playing = false;
+    meshCamera.clip = -1;
+    meshCamera.time = 0;
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    if (canvas && canvas._geom) canvas._geom._animLocals = null;
+    if (window.applyMirrorPose) applyMirrorPose();
     render();
   },
   "mesh-preset"(button) {
