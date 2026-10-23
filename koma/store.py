@@ -534,6 +534,7 @@ class Store:
         paths = [ref["image_path"] for ref in self.list_refs("character", character_id)]
         for mesh in self.list_meshes(character_id):
             paths.append(mesh["glb_path"])
+            paths.append(mesh["glb_path"] + ".anims.json")
             if mesh.get("thumb_path"):
                 paths.append(mesh["thumb_path"])
         self._write("DELETE FROM refs WHERE owner_kind = 'character' AND owner_id = ?", (character_id,))
@@ -569,6 +570,7 @@ class Store:
         row = self.get_mesh(mesh_id)
         self._write("DELETE FROM meshes WHERE id = ?", (mesh_id,))
         self._drop(row["glb_path"])
+        self._drop(row["glb_path"] + ".anims.json")
         self._drop(row.get("thumb_path"))
         return row
 

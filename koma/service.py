@@ -1825,10 +1825,13 @@ class Studio:
             clips = retarget_clips(data, target_path.read_bytes())
         except MeshError as error:
             raise ValueError(str(error)) from None
-        packed = json.dumps(clips)
-        if len(packed) > 8_000_000:
-            raise ValueError("That animation is too large to import.")
-        return {"clips": clips}
+        saved = _merge_saved_anims(target_path, clips)
+        return {"clips": clips, "saved": saved}
+
+    def character_mesh_anims(self, params: dict) -> dict:
+        """Clips previously imported onto this model. Empty when none were saved."""
+        mesh = self.store.get_mesh(params["id"])
+        return {"clips": _read_saved_anims(Path(mesh["glb_path"]))}
 
     def character_mesh_bytes(self, params: dict) -> dict:
         mesh = self.store.get_mesh(params["id"])
@@ -3026,6 +3029,98 @@ def _local_model_path(raw: object) -> Path:
     return resolved
 
 
+def _anims_sidecar(glb_path: Path) -> Path:
+    return Path(f"{glb_path}.anims.json")
+
+
+def _clip_record(raw: object) -> dict | None:
+    if not isinstance(raw, dict):
+        return None
+    name = str(raw.get("name") or "").strip()
+    if not name or len(name) > 80:
+        return None
+    try:
+        duration = float(raw.get("duration") or 0)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(duration) or duration < 0:
+        return None
+    channels = raw.get("channels")
+    if not isinstance(channels, list) or not channels or len(channels) > 400:
+        return None
+    cleaned = []
+    for channel in channels:
+        if not isinstance(channel, dict):
+            return None
+        path = channel.get("path")
+        if path not in {"translation", "rotation", "scale"}:
+            return None
+        try:
+            node = int(channel.get("node"))
+        except (TypeError, ValueError):
+            return None
+        if node < 0 or node > 4096:
+            return None
+        interpolation = channel.get("interpolation") or "LINEAR"
+        if interpolation not in {"LINEAR", "STEP", "CUBICSPLINE"}:
+            interpolation = "LINEAR"
+        times = channel.get("times")
+        values = channel.get("values")
+        if not isinstance(times, list) or not isinstance(values, list) or not times or not values:
+            return None
+        if len(times) > 20_000 or len(values) > 60_000:
+            return None
+        cleaned.append(
+            {
+                "node": node,
+                "path": path,
+                "interpolation": interpolation,
+                "times": times,
+                "values": values,
+            }
+        )
+    return {"name": name[:80], "duration": duration, "channels": cleaned}
+
+
+def _read_saved_anims(glb_path: Path) -> list[dict]:
+    path = _anims_sidecar(glb_path)
+    if not path.is_file():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    if not isinstance(data, list):
+        return []
+    clips = []
+    for raw in data:
+        clip = _clip_record(raw)
+        if clip:
+            clips.append(clip)
+    return clips
+
+
+def _merge_saved_anims(glb_path: Path, clips: list[dict]) -> list[dict]:
+    incoming = []
+    for raw in clips:
+        clip = _clip_record(raw)
+        if clip:
+            incoming.append(clip)
+    if not incoming:
+        raise ValueError("That animation does not match this rig.")
+    names = {clip["name"] for clip in incoming}
+    kept = [clip for clip in _read_saved_anims(glb_path) if clip["name"] not in names]
+    saved = kept + incoming
+    if len(saved) > 24:
+        raise ValueError("This model already has 24 imported animations.")
+    packed = json.dumps(saved, separators=(",", ":"))
+    if len(packed) > 8_000_000:
+        raise ValueError("That animation is too large to import.")
+    dest = _anims_sidecar(glb_path)
+    dest.write_text(packed, encoding="utf-8")
+    return saved
+
+
 def _flat_vectors(raw: object, width: int, minimum: int, limit: int, empty: str) -> list[tuple[float, ...]]:
     if not isinstance(raw, list) or len(raw) % width:
         raise ValueError(empty)
@@ -3255,6 +3350,7 @@ ROUTES = {
     "character.mesh_export": Studio.character_mesh_export,
     "character.mesh_export_posed": Studio.character_mesh_export_posed,
     "character.mesh_anim": Studio.character_mesh_anim,
+    "character.mesh_anims": Studio.character_mesh_anims,
     "character.mesh_bytes": Studio.character_mesh_bytes,
     "character.mesh_thumb": Studio.character_mesh_thumb,
     "character.mesh_shot": Studio.character_mesh_shot,
