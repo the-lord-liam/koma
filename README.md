@@ -66,7 +66,7 @@ Search on the home screen looks through manga titles, chapter titles, dialogue, 
 
 Dialogue and sound effects are drawn by the app, not by the image model, so the words stay the ones you typed. A long sound effect shrinks to fit the panel instead of being cut off. Japanese and other CJK lettering uses a CJK font. Latin text uses that face when it includes Latin letters, and a Latin face otherwise. Balloon presets set a speech balloon, a shout, a thought, or a caption in one click.
 
-An empty manga, chapter, or character name is refused with a short message. A missing or unreadable panel image is drawn as a plain placeholder, so export still finishes. If the export folder cannot be written, if the library is open in another window, or if the library file is damaged, Koma says so instead of failing quietly. A damaged library stops at startup and asks you to move `koma.sqlite` aside.
+An empty manga, chapter, or character name is refused with a short message. A missing or unreadable panel image is drawn as a plain placeholder, so export still finishes. If the export folder cannot be written, if the library is open in another window, or if the library file is damaged, Koma says so instead of failing quietly. A page image that cannot be read is reported on its own, rather than as a read-only folder. A damaged library stops at startup and asks you to move `koma.sqlite` aside.
 
 ## API key
 
