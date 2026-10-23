@@ -851,6 +851,27 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(names, ["001.png"])
         self.assertGreater(Path(cbz["path"]).stat().st_size, 100)
 
+    def test_chapter_pdf_is_finish_size(self):
+        import re
+
+        prepared = self.studio.canvas_prepare(
+            {"title": "Bound", "kind": "manga", "preset": "b6", "quality": "print", "create": True}
+        )
+        project = prepared["tree"]["project"]
+        chapter = prepared["tree"]["chapters"][0]
+        self.studio.page_create({"chapterId": chapter["id"], "layout": "full"})
+        exported = self.studio.export_chapter({"chapterId": chapter["id"], "format": "pdf"})
+        raw = Path(exported["path"]).read_bytes().decode("latin1")
+        boxes = re.findall(r"/MediaBox\s*\[([^\]]+)\]", raw)
+        self.assertEqual(len(boxes), 2)
+        numbers = [float(part) for part in boxes[0].split()]
+        self.assertEqual(numbers[0], 0)
+        self.assertEqual(numbers[1], 0)
+        width_pt, height_pt = numbers[2], numbers[3]
+        self.assertAlmostEqual(width_pt, project["trimW"] / 25.4 * 72, delta=1)
+        self.assertAlmostEqual(height_pt, project["trimH"] / 25.4 * 72, delta=1)
+        self.assertLess(width_pt, project["pageWidth"] / 2)
+
     def test_search_duplicate_chapter_and_failures(self):
         import urllib.error
         from unittest.mock import patch
