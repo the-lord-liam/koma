@@ -216,6 +216,17 @@ function render() {
     };
   }
   const scrolls = [...document.querySelectorAll("[data-scroll]")].map((el) => [el.dataset.scroll, el.scrollTop]);
+  document.querySelectorAll("canvas[data-mesh-id]").forEach((canvas) => {
+    const gl = canvas._gl;
+    if (!gl) return;
+    if (gl.isContextLost && gl.isContextLost()) {
+      canvas._gl = null;
+      return;
+    }
+    const lose = gl.getExtension("WEBGL_lose_context");
+    if (lose) lose.loseContext();
+    canvas._gl = null;
+  });
   const topHtml = renderTop();
   const mainHtml = renderMain();
   document.body.dataset.view = state.view;
@@ -2783,6 +2794,15 @@ const actions = {
   },
   "mesh-shape"(button) {
     meshCamera.shape = button.dataset.value || "";
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    document.querySelectorAll("[data-act='mesh-shape']").forEach((chip) => {
+      chip.classList.toggle("on", (chip.dataset.value || "") === (meshCamera.shape || ""));
+    });
+    if (canvas && canvas._geom && canvas._geom.rig && typeof applyClipFrame === "function" && typeof redraw === "function") {
+      applyClipFrame(canvas._geom);
+      redraw(canvas);
+      return;
+    }
     render();
   },
   "mesh-pose"() {
