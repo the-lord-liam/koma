@@ -2114,7 +2114,31 @@ for (const rightX of [0.2, -0.2]) {
   const fingerBind = dot(rotateVec(invQuat(bindHand), bindFinger), palmLocal);
   const fingerFist = dot(rotateVec(invQuat(fistHand), fistFinger), palmLocal);
   const hinges = {};
-  for (const name of ["relaxed", "walk", "run", "sit", "point", "cross", "fight"]) {
+  const waveWorlds = boneWorlds(geom, buildPreset(geom, "wave"));
+  const waveUpper = limb(waveWorlds, "rightUpperArm", "rightLowerArm");
+  const waveLower = limb(waveWorlds, "rightLowerArm", "rightHand");
+  const waveLeft = limb(waveWorlds, "leftUpperArm", "leftLowerArm");
+  const waveElbow = Math.acos(Math.max(-1, Math.min(1, dot(waveUpper, waveLower)))) * 180 / Math.PI;
+  const waveHead = quatFromMatrix(waveWorlds[geom.humanoid.head]);
+  const kneelWorlds = boneWorlds(geom, buildPreset(geom, "kneel"));
+  const kneelRightThigh = limb(kneelWorlds, "rightUpperLeg", "rightLowerLeg");
+  const kneelRightShin = limb(kneelWorlds, "rightLowerLeg", "rightFoot");
+  const kneelLeftShin = limb(kneelWorlds, "leftLowerLeg", "leftFoot");
+  const kneelLeftThigh = limb(kneelWorlds, "leftUpperLeg", "leftLowerLeg");
+  const kneelHead = quatFromMatrix(kneelWorlds[geom.humanoid.head]);
+  const strideWorlds = boneWorlds(geom, buildPreset(geom, "stride"));
+  const strideLead = limb(strideWorlds, "leftUpperLeg", "leftLowerLeg");
+  const strideTrail = limb(strideWorlds, "rightUpperLeg", "rightLowerLeg");
+  const strideArmLead = limb(strideWorlds, "rightUpperArm", "rightLowerArm");
+  const strideArmBack = limb(strideWorlds, "leftUpperArm", "leftLowerArm");
+  const strideSpine = limb(strideWorlds, "spine", "chest");
+  const strideHead = quatFromMatrix(strideWorlds[geom.humanoid.head]);
+  const crouchWorlds = boneWorlds(geom, buildPreset(geom, "crouch"));
+  const crouchThigh = limb(crouchWorlds, "leftUpperLeg", "leftLowerLeg");
+  const crouchShin = limb(crouchWorlds, "leftLowerLeg", "leftFoot");
+  const crouchHead = quatFromMatrix(crouchWorlds[geom.humanoid.head]);
+  const wavePose = buildPreset(geom, "wave");
+  for (const name of ["relaxed", "walk", "run", "sit", "point", "cross", "fight", "wave", "kneel", "stride", "crouch"]) {
     const posed = boneWorlds(geom, buildPreset(geom, name));
     hinges[name] = POSE_HINGES.map((hinge) => flexOf(geom, posed, bindWorlds, axes, hinge));
   }
@@ -2155,6 +2179,32 @@ for (const rightX of [0.2, -0.2]) {
     pointFaceRight: dot(pointFace, axes.right),
     fingerBind,
     fingerFist,
+    waveUpperUp: dot(waveUpper, axes.up),
+    waveLowerUp: dot(waveLower, axes.up),
+    waveLowerRight: dot(waveLower, axes.right),
+    waveLeftUp: dot(waveLeft, axes.up),
+    waveElbow,
+    waveHeadUp: dot(rotateVec(waveHead, localHeadUp), axes.up),
+    waveFaceForward: dot(rotateVec(waveHead, localFace), axes.forward),
+    waveFingers: wavePose.leftMiddleProximal ? 1 : 0,
+    kneelRightForward: dot(kneelRightThigh, axes.forward),
+    kneelRightUp: dot(kneelRightThigh, axes.up),
+    kneelRightShinForward: dot(kneelRightShin, axes.forward),
+    kneelLeftShinUp: dot(kneelLeftShin, axes.up),
+    kneelLeftForward: dot(kneelLeftThigh, axes.forward),
+    kneelHeadUp: dot(rotateVec(kneelHead, localHeadUp), axes.up),
+    kneelKnee: flexOf(geom, kneelWorlds, bindWorlds, axes, POSE_HINGES[3]),
+    strideLead: dot(strideLead, axes.forward),
+    strideTrail: dot(strideTrail, axes.forward),
+    strideArmLead: dot(strideArmLead, axes.forward),
+    strideArmBack: dot(strideArmBack, axes.forward),
+    strideSpineUp: dot(strideSpine, axes.up),
+    strideHeadUp: dot(rotateVec(strideHead, localHeadUp), axes.up),
+    crouchThighForward: dot(crouchThigh, axes.forward),
+    crouchThighUp: dot(crouchThigh, axes.up),
+    crouchShinUp: dot(crouchShin, axes.up),
+    crouchHeadUp: dot(rotateVec(crouchHead, localHeadUp), axes.up),
+    crouchKnee: flexOf(geom, crouchWorlds, bindWorlds, axes, POSE_HINGES[2]),
     hyperBefore: dot(before, axes.forward),
     hyperAfter: dot(after, axes.forward),
     legalFlex,
@@ -2190,6 +2240,32 @@ process.stdout.write(JSON.stringify(report));
             self.assertGreater(item["pointFaceForward"], 0.75)
             self.assertGreater(item["pointFaceRight"], 0.2)
             self.assertGreater(item["fingerFist"], item["fingerBind"] + 0.35)
+            self.assertGreater(item["waveUpperUp"], 0.45)
+            self.assertGreater(item["waveLowerUp"], 0.45)
+            self.assertGreater(item["waveLowerRight"], 0)
+            self.assertGreater(item["waveElbow"], 45)
+            self.assertLess(item["waveLeftUp"], -0.7)
+            self.assertGreater(item["waveHeadUp"], 0.9)
+            self.assertGreater(item["waveFaceForward"], 0.9)
+            self.assertEqual(item["waveFingers"], 0)
+            self.assertGreater(item["kneelRightForward"], 0.15)
+            self.assertLess(item["kneelRightUp"], -0.8)
+            self.assertLess(item["kneelRightShinForward"], -0.7)
+            self.assertLess(item["kneelLeftShinUp"], -0.5)
+            self.assertGreater(item["kneelLeftForward"], 0.3)
+            self.assertGreater(item["kneelHeadUp"], 0.9)
+            self.assertGreater(item["kneelKnee"], 50)
+            self.assertGreater(item["strideLead"], 0.6)
+            self.assertLess(item["strideTrail"], -0.5)
+            self.assertGreater(item["strideArmLead"], 0.5)
+            self.assertLess(item["strideArmBack"], -0.4)
+            self.assertGreater(item["strideSpineUp"], 0.85)
+            self.assertGreater(item["strideHeadUp"], 0.9)
+            self.assertGreater(item["crouchThighForward"], 0.5)
+            self.assertLess(item["crouchThighUp"], -0.4)
+            self.assertLess(item["crouchShinUp"], -0.7)
+            self.assertGreater(item["crouchHeadUp"], 0.9)
+            self.assertGreater(item["crouchKnee"], 40)
             self.assertGreater(item["fightLead"], 0.5)
             self.assertLess(item["fightBack"], 0)
             self.assertGreater(item["hyperBefore"], 0.7)
