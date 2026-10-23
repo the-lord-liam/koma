@@ -331,17 +331,23 @@ function renderMenu() {
   `;
 }
 
+function themeButton() {
+  const light = document.documentElement.dataset.theme === "light";
+  return `<button type="button" class="quiet" data-act="theme">${light ? "Dark" : "Light"}</button>`;
+}
+
 function renderTop() {
   const status = `<span id="status">${esc(state.status)}</span>`;
+  const theme = themeButton();
   const menu = renderMenu();
   if (state.view === "home") {
     const settings = `<button type="button" class="quiet" data-act="nav" data-view="settings">Settings</button>`;
-    return `<span class="grow"></span>${status}${settings}`;
+    return `<span class="grow"></span>${status}${theme}${settings}`;
   }
   if (state.view === "setup") {
     const back = `<button type="button" class="quiet" data-act="go-home">Canvases</button>`;
     const settings = `<button type="button" class="quiet" data-act="nav" data-view="settings">Settings</button>`;
-    return `${back}<span class="grow"></span>${status}${settings}`;
+    return `${back}<span class="grow"></span>${status}${theme}${settings}`;
   }
   if (inStudio()) {
     const tools = [
@@ -354,7 +360,7 @@ function renderTop() {
       <button type="button" class="${state.view === view ? "on" : ""}" data-act="nav" data-view="${view}">${label}</button>
     `).join("");
     const back = `<button type="button" class="quiet" data-act="go-home">Canvases</button>`;
-    return `${back}<nav class="tools">${tools}</nav><span class="grow"></span>${status}${menu}`;
+    return `${back}<nav class="tools">${tools}</nav><span class="grow"></span>${status}${theme}${menu}`;
   }
   const back = `<button type="button" class="quiet" data-act="go-home">Canvases</button>`;
   if (state.view === "illust") {
@@ -366,12 +372,12 @@ function renderTop() {
       ? `<button type="button" class="quiet" data-act="export-illust" data-id="${esc(piece.id)}" ${state.busy || !piece.imageUrl ? "disabled" : ""}>Export</button>
          <button type="button" class="quiet danger-quiet" data-act="delete-illust" data-id="${esc(piece.id)}" ${state.busy ? "disabled" : ""}>Delete</button>`
       : "";
-    return `${back}${title}<span class="grow"></span>${status}${tools}${menu}`;
+    return `${back}${title}<span class="grow"></span>${status}${tools}${theme}${menu}`;
   }
   if (state.view === "about") {
-    return `${back}<span class="word">About</span><span class="grow"></span>${status}${menu}`;
+    return `${back}<span class="word">About</span><span class="grow"></span>${status}${theme}${menu}`;
   }
-  return `${back}<span class="word">Settings</span><span class="grow"></span>${status}${menu}`;
+  return `${back}<span class="word">Settings</span><span class="grow"></span>${status}${theme}${menu}`;
 }
 
 function renderMain() {
@@ -2096,6 +2102,28 @@ function flashStatus(text) {
   }, 1400);
 }
 
+function paintMeshChrome() {
+  const canvas = document.querySelector("canvas[data-mesh-id]");
+  const mark = (act, on) => {
+    const button = document.querySelector(`[data-act="${act}"]`);
+    if (button) button.classList.toggle("on", Boolean(on));
+  };
+  mark("mesh-auto", meshCamera.auto);
+  mark("mesh-wire", meshCamera.wire);
+  mark("mesh-light", meshCamera.light);
+  mark("mesh-grid", meshCamera.grid);
+  mark("mesh-outline", meshCamera.outline);
+  document.querySelectorAll("[data-act='mesh-angle']").forEach((button) => {
+    button.classList.toggle("on", button.dataset.value === meshCamera.angle);
+  });
+  const ground = document.querySelector("[data-act='mesh-ground']");
+  if (ground) {
+    ground.classList.toggle("on", meshCamera.backdrop === "light");
+    ground.textContent = meshCamera.backdrop === "light" ? "Dark ground" : "Light ground";
+  }
+  if (canvas && window.redraw) redraw(canvas);
+}
+
 function turntableFrames(canvas) {
   const count = 24;
   const yaw = meshCamera.yaw;
@@ -2137,6 +2165,12 @@ function turntablePng(canvas, limit) {
 }
 
 const actions = {
+  theme() {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("koma-theme", next); } catch (_error) { /* The choice still applies for this visit. */ }
+    render();
+  },
   "go-home"() {
     state.menuOpen = false;
     state.view = "home";
@@ -2854,27 +2888,27 @@ const actions = {
   },
   "mesh-auto"() {
     meshCamera.auto = !meshCamera.auto;
-    render();
+    paintMeshChrome();
   },
   "mesh-wire"() {
     meshCamera.wire = !meshCamera.wire;
-    render();
+    paintMeshChrome();
   },
   "mesh-light"() {
     meshCamera.light = !meshCamera.light;
-    render();
+    paintMeshChrome();
   },
   "mesh-grid"() {
     meshCamera.grid = !meshCamera.grid;
-    render();
+    paintMeshChrome();
   },
   "mesh-outline"() {
     meshCamera.outline = !meshCamera.outline;
-    render();
+    paintMeshChrome();
   },
   "mesh-ground"() {
     meshCamera.backdrop = meshCamera.backdrop === "light" ? "dark" : "light";
-    render();
+    paintMeshChrome();
   },
   "mesh-shape"(button) {
     meshCamera.shape = button.dataset.value || "";
@@ -3023,7 +3057,7 @@ const actions = {
       meshCamera.yaw = front - 0.62;
       meshCamera.pitch = 0.16;
     }
-    render();
+    paintMeshChrome();
   },
   "mesh-turntable"(button) {
     const canvas = document.querySelector("canvas[data-mesh-id]");
@@ -4302,7 +4336,14 @@ async function savePageLayout(el) {
   render();
 }
 
+function loadTheme() {
+  let saved = "";
+  try { saved = localStorage.getItem("koma-theme") || ""; } catch (_error) { saved = ""; }
+  document.documentElement.dataset.theme = saved === "light" ? "light" : "dark";
+}
+
 async function boot() {
+  loadTheme();
   const main = document.getElementById("main");
   try {
     if (!window.webkit || !window.webkit.messageHandlers) {
