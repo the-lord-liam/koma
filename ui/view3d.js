@@ -2566,11 +2566,14 @@ function presetTargets(name) {
       rightLowerArm: (axes) => mix(axes, [["up", -0.78], ["forward", 0.55], ["right", -0.22]]),
     },
     point: {
-      rightUpperArm: (axes) => mix(axes, [["forward", 0.92], ["up", 0.02], ["right", 0.38]]),
-      rightLowerArm: (axes) => mix(axes, [["forward", 0.96], ["up", 0], ["right", 0.28]]),
+      // A level forward arm rises into the forehead in three-quarter, because the hand
+      // comes toward the camera. Aim slightly down and out so the hand stays at shoulder
+      // height beside the face, and keep the forearm on the same line so the elbow stays straight.
+      rightUpperArm: (axes) => mix(axes, [["forward", 0.55], ["right", 0.78], ["up", -0.32]]),
+      rightLowerArm: (axes) => mix(axes, [["forward", 0.55], ["right", 0.78], ["up", -0.32]]),
       leftUpperArm: (axes) => mix(axes, [["up", -0.9], ["right", -0.3], ["forward", 0.12]]),
       leftLowerArm: (axes) => mix(axes, [["up", -0.75], ["forward", 0.45]]),
-      head: (axes) => mix(axes, [["up", 0.98], ["right", 0.16]]),
+      head: (axes) => mix(axes, [["up", 1]]),
     },
     cross: {
       leftUpperArm: (axes) => mix(axes, [["right", 0.72], ["forward", 0.55], ["up", -0.2]]),
@@ -2605,6 +2608,7 @@ function buildPreset(geom, name) {
   }
   clampHinges(geom, pose);
   if (name === "fight") curlFingers(geom, pose, bindWorlds);
+  if (name === "point") pointIndex(geom, pose, bindWorlds);
   return pose;
 }
 
@@ -2668,6 +2672,43 @@ function curlFingers(geom, pose, bindWorlds) {
         aimBone(geom, pose, bindWorlds, bone, target, false);
       });
     }
+  }
+}
+
+function pointIndex(geom, pose, bindWorlds) {
+  const side = "right";
+  const handName = `${side}Hand`;
+  if (geom.humanoid[handName] == null || geom.humanoid[`${side}IndexProximal`] == null) return;
+  const palm = palmNormal(geom, bindWorlds, side);
+  if (!palm) return;
+  const handNode = geom.humanoid[handName];
+  const bindHand = quatFromMatrix(bindWorlds[handNode]);
+  const palmLocal = rotateVec(invQuat(bindHand), palm);
+  const curled = [
+    ["Thumb", 1.05, 1.85, 2.35],
+    ["Middle", 1.3, 2.3, 2.95],
+    ["Ring", 1.25, 2.2, 2.85],
+    ["Little", 1.15, 2.05, 2.7],
+  ];
+  for (const spec of curled) {
+    ["Proximal", "Intermediate", "Distal"].forEach((part, index) => {
+      const bone = side + spec[0] + part;
+      if (geom.humanoid[bone] == null) return;
+      const dir = boneDirection(geom, bindWorlds, bone, fingerChild(bone));
+      if (!dir) return;
+      const local = rotateVec(invQuat(bindHand), dir);
+      const bent = rotateToward(local, palmLocal, spec[index + 1]);
+      const posed = boneWorlds(geom, pose);
+      aimBone(geom, pose, bindWorlds, bone, rotateVec(quatFromMatrix(posed[handNode]), bent), false);
+    });
+  }
+  const posed = boneWorlds(geom, pose);
+  const elbow = bonePoint(geom, posed, `${side}LowerArm`);
+  const hand = bonePoint(geom, posed, handName);
+  if (!elbow || !hand) return;
+  const aim = norm(subVec(hand, elbow));
+  for (const part of ["Proximal", "Intermediate", "Distal"]) {
+    aimBone(geom, pose, bindWorlds, `${side}Index${part}`, aim, false);
   }
 }
 
