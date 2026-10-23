@@ -84,6 +84,8 @@ Each character can have a 3D model as well as a portrait. Generate it from a pro
 
 ### Viewer
 
+**Light** and **Dark** in the header switch the studio colors and remember the choice on this machine. The page itself stays paper-colored. Wireframe, Lighting, Grid, Outline, the ground, and the camera angles update the model in place, so a large file is not loaded again just to change the view.
+
 The viewer ships with Koma. It does not load three.js, `<model-viewer>`, or anything else from a CDN, so it works with no network. It draws the model's base color, so a toon texture shows up instead of a flat stand-in. Separate parts are placed where the file puts them. The camera fits the model's height, width, and depth, so a tall character or a long animal stays in frame. Drag orbits freely, including upside down. Shift-drag pans, Alt-drag rolls, and scroll zooms. Reset view puts the camera back. Auto-rotate spins the model until you turn it off. Wireframe and Lighting can be on together or one at a time. Grid draws a floor under the figure. Outline draws a thin dark edge around the figure and starts off. Turntable GIF writes a short looping movie of one full turn. Turntable PNGs writes the same turn as numbered pictures. Both land in `~/Documents/Koma/<title>/`. Light ground switches the backdrop. Large view fills the window; Close, or Escape, leaves it. On a desktop that allows it, Large view also asks the window to go fullscreen.
 
 Sendagaya Shino (CC0) in the Standing pose, arms down, from a three-quarter front. Grid and lighting are on, and the camera and display controls sit beside the model. The pose handles are hidden.
