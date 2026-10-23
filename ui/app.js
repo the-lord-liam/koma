@@ -1162,7 +1162,7 @@ function animControls(current) {
       <input type="range" min="0" max="${duration || 0}" step="0.01" value="${time}" data-anim-time aria-label="Animation time" ${active ? "" : "disabled"}>
       <span data-anim-readout>${active ? `${time.toFixed(2)}s / ${duration.toFixed(2)}s` : "No clip"}</span>
     </label>
-    <p class="meta">Play a clip from the file, scrub to a frame, then save that angle. Import animation reads a GLB or VRM on your machine and matches it by bone name, or by the humanoid map. It stays on this model until you switch away. Nothing is uploaded.</p>`;
+    <p class="meta">Play a clip from the file, scrub to a frame, then save that angle. Import animation reads a GLB or VRM on your machine and matches it by bone name, or by the humanoid map. An imported clip is saved with this model and is here the next time you open it. Nothing is uploaded.</p>`;
 }
 
 function poseControls(person, current) {
