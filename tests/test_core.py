@@ -1966,6 +1966,7 @@ for (const rightX of [0.2, -0.2]) {
   const pointWorlds = boneWorlds(geom, buildPreset(geom, "point"));
   const pointUpper = limb(pointWorlds, "rightUpperArm", "rightLowerArm");
   const pointLower = limb(pointWorlds, "rightLowerArm", "rightHand");
+  const pointElbow = Math.acos(Math.max(-1, Math.min(1, dot(pointUpper, pointLower)))) * 180 / Math.PI;
   const bindFinger = limb(bindWorlds, "leftMiddleProximal", "leftMiddleIntermediate");
   const fistFinger = limb(fightWorlds, "leftMiddleProximal", "leftMiddleIntermediate");
   const palm = palmNormal(geom, bindWorlds, "left");
@@ -2010,6 +2011,7 @@ for (const rightX of [0.2, -0.2]) {
     pointLowerUp: dot(pointLower, axes.up),
     pointLowerForward: dot(pointLower, axes.forward),
     pointLowerRight: dot(pointLower, axes.right),
+    pointElbow,
     fingerBind,
     fingerFist,
     hyperBefore: dot(before, axes.forward),
@@ -2037,10 +2039,11 @@ process.stdout.write(JSON.stringify(report));
             self.assertLess(item["fightLowerUp"], 0.35)
             self.assertGreater(item["fightLowerForward"], 0.5)
             self.assertGreater(item["fightElbow"], 70)
-            self.assertLess(abs(item["pointUpperUp"]), 0.2)
-            self.assertLess(abs(item["pointLowerUp"]), 0.2)
-            self.assertGreater(item["pointLowerForward"], 0.7)
-            self.assertGreater(item["pointLowerRight"], 0.1)
+            self.assertLess(abs(item["pointUpperUp"]), 0.45)
+            self.assertLess(abs(item["pointLowerUp"]), 0.45)
+            self.assertGreater(item["pointLowerForward"], 0.4)
+            self.assertGreater(item["pointLowerRight"], 0.5)
+            self.assertLess(item["pointElbow"], 20)
             self.assertGreater(item["fingerFist"], item["fingerBind"] + 0.35)
             self.assertGreater(item["fightLead"], 0.5)
             self.assertLess(item["fightBack"], 0)
