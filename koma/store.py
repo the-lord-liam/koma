@@ -448,8 +448,9 @@ class Store:
                     JOIN chapters ON chapters.id = pages.chapter_id
                     WHERE chapters.project_id = ?
                 )
+                OR (owner_kind = 'project' AND owner_id = ?)
                 """,
-                (project_id, project_id, project_id, project_id),
+                (project_id, project_id, project_id, project_id, project_id),
             )
             self._write("DELETE FROM projects WHERE id = ?", (project_id,))
         for path in paths:
@@ -493,8 +494,11 @@ class Store:
             UNION
             SELECT thumb_path FROM meshes
               WHERE character_id IN (SELECT id FROM characters WHERE project_id = ?)
+            UNION
+            SELECT image_path FROM refs
+              WHERE owner_kind = 'project' AND owner_id = ?
             """,
-            (project_id, project_id, project_id, project_id, project_id, project_id, project_id, project_id),
+            (project_id, project_id, project_id, project_id, project_id, project_id, project_id, project_id, project_id),
         )
         return [row["p"] for row in rows if row["p"]]
 
