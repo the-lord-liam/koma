@@ -2498,6 +2498,54 @@ process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: O
         self.assertNotEqual(full_hash, cut_hash, "long sound effect matched its 24-character prefix")
         self.assertLess(full.stat().st_size, 300_000)
 
+    def test_turntable_export_writes_a_gif_and_png_sequence(self) -> None:
+        import base64
+        import io
+        from pathlib import Path
+
+        from PIL import Image
+
+        created = self.studio.project_create({"title": "Turn", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        made = self.studio.character_create({"projectId": project_id, "name": "Aki"})
+        character_id = made["tree"]["characters"][-1]["id"]
+        from koma.mesh import cube_glb
+
+        glb_path = Path(self.tmp.name) / "sample.glb"
+        glb_path.write_bytes(cube_glb())
+        imported = self.studio.character_mesh_import({"id": character_id, "path": str(glb_path)})
+        mesh_id = imported["tree"]["characters"][-1]["meshes"][0]["id"]
+        frames = []
+        for index in range(8):
+            size = (1000, 800) if index == 0 else (64, 48)
+            image = Image.new("RGB", size, (20 + index * 20, 40, 80))
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            frames.append("data:image/png;base64," + base64.b64encode(buffer.getvalue()).decode("ascii"))
+        gif = self.studio.character_mesh_turntable({"id": mesh_id, "kind": "gif", "frames": frames})
+        gif_path = Path(gif["path"])
+        self.assertTrue(gif_path.is_file())
+        self.assertEqual(gif_path.suffix, ".gif")
+        self.assertEqual(gif["frames"], 8)
+        with Image.open(gif_path) as movie:
+            self.assertEqual(movie.format, "GIF")
+            self.assertEqual(movie.n_frames, 8)
+            self.assertLessEqual(max(movie.size), 480)
+        png = self.studio.character_mesh_turntable({"id": mesh_id, "kind": "png", "frames": frames})
+        folder = Path(png["path"])
+        names = sorted(path.name for path in folder.glob("frame-*.png"))
+        self.assertEqual(names, [f"frame-{index:02d}.png" for index in range(1, 9)])
+        with Image.open(folder / "frame-01.png") as first:
+            self.assertEqual(first.format, "PNG")
+            self.assertLessEqual(max(first.size), 480)
+        short = frames[:3]
+        with self.assertRaises(ValueError):
+            self.studio.character_mesh_turntable({"id": mesh_id, "kind": "gif", "frames": short})
+        app = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('data-act="mesh-turntable"', app)
+        self.assertIn("turntableFrames", app)
+        self.assertIn('"character.mesh_turntable"', (Path(__file__).resolve().parents[1] / "koma" / "service.py").read_text(encoding="utf-8"))
+
     def test_outline_toggle_starts_off_and_is_in_the_viewer(self) -> None:
         from pathlib import Path
 
