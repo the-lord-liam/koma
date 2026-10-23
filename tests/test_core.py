@@ -1967,6 +1967,12 @@ for (const rightX of [0.2, -0.2]) {
   const pointUpper = limb(pointWorlds, "rightUpperArm", "rightLowerArm");
   const pointLower = limb(pointWorlds, "rightLowerArm", "rightHand");
   const pointElbow = Math.acos(Math.max(-1, Math.min(1, dot(pointUpper, pointLower)))) * 180 / Math.PI;
+  const bindHead = quatFromMatrix(bindWorlds[geom.humanoid.head]);
+  const posedHead = quatFromMatrix(pointWorlds[geom.humanoid.head]);
+  const localFace = rotateVec(invQuat(bindHead), axes.forward);
+  const localHeadUp = rotateVec(invQuat(bindHead), axes.up);
+  const pointFace = rotateVec(posedHead, localFace);
+  const pointHeadUpVec = rotateVec(posedHead, localHeadUp);
   const bindFinger = limb(bindWorlds, "leftMiddleProximal", "leftMiddleIntermediate");
   const fistFinger = limb(fightWorlds, "leftMiddleProximal", "leftMiddleIntermediate");
   const palm = palmNormal(geom, bindWorlds, "left");
@@ -2012,6 +2018,9 @@ for (const rightX of [0.2, -0.2]) {
     pointLowerForward: dot(pointLower, axes.forward),
     pointLowerRight: dot(pointLower, axes.right),
     pointElbow,
+    pointHeadUp: dot(pointHeadUpVec, axes.up),
+    pointFaceForward: dot(pointFace, axes.forward),
+    pointFaceRight: dot(pointFace, axes.right),
     fingerBind,
     fingerFist,
     hyperBefore: dot(before, axes.forward),
@@ -2039,11 +2048,15 @@ process.stdout.write(JSON.stringify(report));
             self.assertLess(item["fightLowerUp"], 0.35)
             self.assertGreater(item["fightLowerForward"], 0.5)
             self.assertGreater(item["fightElbow"], 70)
-            self.assertLess(abs(item["pointUpperUp"]), 0.45)
-            self.assertLess(abs(item["pointLowerUp"]), 0.45)
-            self.assertGreater(item["pointLowerForward"], 0.4)
-            self.assertGreater(item["pointLowerRight"], 0.5)
+            self.assertLess(abs(item["pointUpperUp"]), 0.35)
+            self.assertLess(abs(item["pointLowerUp"]), 0.35)
+            self.assertGreater(item["pointLowerForward"], 0.75)
+            self.assertGreater(item["pointLowerRight"], 0.2)
+            self.assertLess(item["pointLowerRight"], 0.55)
             self.assertLess(item["pointElbow"], 20)
+            self.assertGreater(item["pointHeadUp"], 0.9)
+            self.assertGreater(item["pointFaceForward"], 0.75)
+            self.assertGreater(item["pointFaceRight"], 0.2)
             self.assertGreater(item["fingerFist"], item["fingerBind"] + 0.35)
             self.assertGreater(item["fightLead"], 0.5)
             self.assertLess(item["fightBack"], 0)
