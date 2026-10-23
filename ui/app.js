@@ -1232,6 +1232,7 @@ function poseControls(person, current) {
     </div>
     <div class="mesh-sliders">
       ${["x", "y", "z"].map((axis) => `<label>${axis.toUpperCase()} <input type="range" min="-180" max="180" step="1" data-pose-axis="${axis}" value="${euler[axis]}" aria-label="${axis.toUpperCase()} rotation"></label>`).join("")}
+      <label>Fingers <input type="range" min="0" max="100" step="1" data-finger-curl value="${Math.round((Number(window.meshCamera && meshCamera.fingerCurl) || 0) * 100)}" aria-label="Finger curl"></label>
     </div>
     <p class="meta">Click a bone here or on the model. Drag a handle, or use the sliders. Mirror copies the left arm and leg onto the right. Wave, Kneeling, Mid-stride, and Crouch are built in. Show bones turns the markers and handles on or off, and it starts on. T / A pose restores the file's bind pose.</p>
     <div class="row mesh-tools">
@@ -4045,6 +4046,10 @@ document.addEventListener("input", (event) => {
   if (el && el.id === "bot-draft") state.botDraft = el.value;
   if (el && el.dataset && el.dataset.poseAxis && window.setPoseAxis) {
     setPoseAxis(el.dataset.poseAxis, el.value);
+    return;
+  }
+  if (el && el.dataset && el.dataset.fingerCurl != null && window.applyFingerCurl) {
+    applyFingerCurl(Number(el.value) / 100);
     return;
   }
   if (el && el.dataset && el.dataset.animTime != null && window.meshCamera) {

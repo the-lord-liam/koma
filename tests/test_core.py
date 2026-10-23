@@ -2280,6 +2280,88 @@ process.stdout.write(JSON.stringify(report));
                     self.assertGreaterEqual(angle, hinge[0] - 0.5, name)
                     self.assertLessEqual(angle, hinge[1] + 0.5, name)
 
+    def test_finger_curl_closes_the_hand(self):
+        import subprocess
+
+        script = r"""
+const fs = require("fs");
+const vm = require("vm");
+global.window = global;
+global.document = {
+  querySelector() { return null; },
+  querySelectorAll() { return []; },
+  addEventListener() {},
+  createElement() { return { getContext() { return null; } }; },
+};
+global.performance = { now: () => 0 };
+global.requestAnimationFrame = () => 1;
+vm.runInThisContext(fs.readFileSync("ui/view3d.js", "utf8"));
+
+function figure() {
+  const nodes = [];
+  const parent = [];
+  const humanoid = {};
+  function add(name, parentIndex, t) {
+    const index = nodes.length;
+    nodes.push({ t, r: [0, 0, 0, 1], s: [1, 1, 1], matrix: null });
+    parent.push(parentIndex);
+    if (name) humanoid[name] = index;
+    return index;
+  }
+  const hips = add("hips", -1, [0, 1, 0]);
+  const spine = add("spine", hips, [0, 0.15, 0]);
+  const chest = add("chest", spine, [0, 0.2, 0]);
+  const hand = add("leftHand", chest, [-0.2, 0.05, 0]);
+  const mid = add("leftMiddleProximal", hand, [-0.08, 0, 0]);
+  const mid2 = add("leftMiddleIntermediate", mid, [-0.06, 0, 0]);
+  add("leftMiddleDistal", mid2, [-0.05, 0, 0]);
+  add(null, humanoid.leftMiddleDistal, [-0.04, 0, 0]);
+  add("leftThumbProximal", hand, [-0.02, -0.03, -0.05]);
+  return { rig: { nodes, parent }, humanoid };
+}
+function nrm(v) {
+  const length = Math.hypot(v[0], v[1], v[2]) || 1;
+  return [v[0] / length, v[1] / length, v[2] / length];
+}
+function fingerDot(pose) {
+  const geom = figure();
+  const bindWorlds = boneWorlds(geom, {});
+  const worlds = boneWorlds(geom, pose);
+  const a = geom.humanoid.leftMiddleProximal;
+  const b = geom.humanoid.leftMiddleIntermediate;
+  const dir = nrm([
+    worlds[b][12] - worlds[a][12],
+    worlds[b][13] - worlds[a][13],
+    worlds[b][14] - worlds[a][14],
+  ]);
+  const palm = palmNormal(geom, bindWorlds, "left");
+  const hand = quatFromMatrix(worlds[geom.humanoid.leftHand]);
+  return dot(rotateVec(invQuat(hand), dir), rotateVec(invQuat(quatFromMatrix(bindWorlds[geom.humanoid.leftHand])), palm));
+}
+const geom = figure();
+const bindWorlds = boneWorlds(geom, {});
+const half = {};
+const full = {};
+curlFingers(geom, half, bindWorlds, 0.45);
+curlFingers(geom, full, bindWorlds, 1);
+const empty = {};
+curlFingers(geom, empty, bindWorlds, 0);
+process.stdout.write(JSON.stringify({
+  open: fingerDot({}),
+  half: fingerDot(half),
+  full: fingerDot(full),
+  emptyKeys: Object.keys(empty).length,
+  halfKeys: Object.keys(half).length,
+}));
+"""
+        completed = subprocess.run(["node", "-e", script], cwd="/workspace", capture_output=True, text=True, check=False)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        report = json.loads(completed.stdout)
+        self.assertEqual(report["emptyKeys"], 0)
+        self.assertGreater(report["halfKeys"], 0)
+        self.assertGreater(report["half"], report["open"] + 0.15)
+        self.assertGreater(report["full"], report["half"] + 0.15)
+
     def test_mirror_copies_left_limbs_to_the_right(self):
         import subprocess
 
