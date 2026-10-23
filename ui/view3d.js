@@ -2213,6 +2213,79 @@ function refreshMeshPose() {
   redraw(canvas);
 }
 
+const MIRROR_PAIRS = [
+  ["leftShoulder", "rightShoulder"],
+  ["leftUpperArm", "rightUpperArm"],
+  ["leftLowerArm", "rightLowerArm"],
+  ["leftHand", "rightHand"],
+  ["leftThumbProximal", "rightThumbProximal"],
+  ["leftThumbIntermediate", "rightThumbIntermediate"],
+  ["leftThumbDistal", "rightThumbDistal"],
+  ["leftIndexProximal", "rightIndexProximal"],
+  ["leftIndexIntermediate", "rightIndexIntermediate"],
+  ["leftIndexDistal", "rightIndexDistal"],
+  ["leftMiddleProximal", "rightMiddleProximal"],
+  ["leftMiddleIntermediate", "rightMiddleIntermediate"],
+  ["leftMiddleDistal", "rightMiddleDistal"],
+  ["leftRingProximal", "rightRingProximal"],
+  ["leftRingIntermediate", "rightRingIntermediate"],
+  ["leftRingDistal", "rightRingDistal"],
+  ["leftLittleProximal", "rightLittleProximal"],
+  ["leftLittleIntermediate", "rightLittleIntermediate"],
+  ["leftLittleDistal", "rightLittleDistal"],
+  ["leftUpperLeg", "rightUpperLeg"],
+  ["leftLowerLeg", "rightLowerLeg"],
+  ["leftFoot", "rightFoot"],
+  ["leftToes", "rightToes"],
+];
+
+function reflectionMatrix(normal) {
+  const n = norm(normal);
+  const matrix = identityMatrix();
+  for (let col = 0; col < 3; col += 1) {
+    for (let row = 0; row < 3; row += 1) {
+      matrix[col * 4 + row] = (col === row ? 1 : 0) - 2 * n[row] * n[col];
+    }
+  }
+  return matrix;
+}
+
+function mirrorQuat(q, normal) {
+  const flip = reflectionMatrix(normal);
+  const rotation = nodeMatrix({ translation: [0, 0, 0], rotation: normalizeQuat(q), scale: [1, 1, 1] });
+  return quatFromMatrix(mul(mul(flip, rotation), flip));
+}
+
+function mirrorPoseLeftToRight(geom, pose) {
+  if (!geom || !geom.rig || !geom.humanoid) return Object.assign({}, pose || {});
+  const next = Object.assign({}, pose || {});
+  const axes = modelAxes(geom, boneWorlds(geom, {}));
+  for (const pair of MIRROR_PAIRS) {
+    const left = pair[0];
+    const right = pair[1];
+    if (geom.humanoid[left] == null || geom.humanoid[right] == null) continue;
+    const worlds = boneWorlds(geom, next);
+    const mirrored = mirrorQuat(quatFromMatrix(worlds[geom.humanoid[left]]), axes.right);
+    const parent = geom.rig.parent[geom.humanoid[right]];
+    const parentRot = parent != null && parent >= 0 ? quatFromMatrix(worlds[parent]) : [0, 0, 0, 1];
+    next[right] = normalizeQuat(mulQuat(invQuat(parentRot), mirrored));
+  }
+  clampHinges(geom, next);
+  return next;
+}
+
+function applyMirrorPose() {
+  const canvas = document.querySelector("canvas[data-mesh-id]");
+  const geom = canvas && canvas._geom;
+  if (!geom || !geom.rig || !geom.humanoid) return;
+  meshCamera.preset = "";
+  meshCamera.playing = false;
+  meshCamera.pose = mirrorPoseLeftToRight(geom, meshCamera.pose || {});
+  if (geom._animLocals) geom._animLocals = null;
+  applyPose(geom);
+  redraw(canvas);
+}
+
 function applyPosePreset(name) {
   const canvas = document.querySelector("canvas[data-mesh-id]");
   const geom = canvas && canvas._geom;
@@ -2475,6 +2548,7 @@ window.boneEuler = boneEuler;
 window.setPoseAxis = setPoseAxis;
 window.refreshMeshPose = refreshMeshPose;
 window.applyPosePreset = applyPosePreset;
+window.applyMirrorPose = applyMirrorPose;
 window.meshPoseInfo = meshPoseInfo;
 window.sampleChannel = sampleChannel;
 window.applyClipFrame = applyClipFrame;
