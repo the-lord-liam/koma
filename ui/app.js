@@ -216,6 +216,17 @@ function render() {
     };
   }
   const scrolls = [...document.querySelectorAll("[data-scroll]")].map((el) => [el.dataset.scroll, el.scrollTop]);
+  document.querySelectorAll("canvas[data-mesh-id]").forEach((canvas) => {
+    const gl = canvas._gl;
+    if (!gl) return;
+    if (gl.isContextLost && gl.isContextLost()) {
+      canvas._gl = null;
+      return;
+    }
+    const lose = gl.getExtension("WEBGL_lose_context");
+    if (lose) lose.loseContext();
+    canvas._gl = null;
+  });
   const topHtml = renderTop();
   const mainHtml = renderMain();
   document.body.dataset.view = state.view;
@@ -1155,7 +1166,7 @@ function animControls(current) {
 function poseControls(person, current) {
   const bones = (window.meshCamera && meshCamera.bones) || [];
   if (!current || !bones.length) return "";
-  const flags = window.meshFlags ? meshFlags() : { poseMode: false, selected: "" };
+  const flags = window.meshFlags ? meshFlags() : { poseMode: false, showBones: true, selected: "" };
   const presets = [
     ["bind", "T / A pose"],
     ["relaxed", "Standing"],
@@ -1205,6 +1216,7 @@ function poseControls(person, current) {
   return `
     <div class="row mesh-tools">
       <button type="button" class="chip on" data-act="mesh-pose">Pose</button>
+      <button type="button" class="chip ${flags.showBones !== false ? "on" : ""}" data-act="mesh-bones">Show bones</button>
       ${presets.map(([value, label]) => `<button type="button" class="chip" data-act="mesh-preset" data-value="${value}">${label}</button>`).join("")}
     </div>
     <div class="mesh-bones" data-scroll="pose-bones">
@@ -1214,7 +1226,7 @@ function poseControls(person, current) {
     <div class="mesh-sliders">
       ${["x", "y", "z"].map((axis) => `<label>${axis.toUpperCase()} <input type="range" min="-180" max="180" step="1" data-pose-axis="${axis}" value="${euler[axis]}" aria-label="${axis.toUpperCase()} rotation"></label>`).join("")}
     </div>
-    <p class="meta">Click a bone here or on the model. Drag a handle, or use the sliders. T / A pose restores the file's bind pose.</p>
+    <p class="meta">Click a bone here or on the model. Drag a handle, or use the sliders. Show bones turns the markers and handles on or off, and it starts on. T / A pose restores the file's bind pose.</p>
     <div class="row mesh-tools">
       <input id="pose-name" class="pose-name" type="text" data-save="local" data-field="poseName" data-entity="" value="${esc(state.poseName || "")}" placeholder="Name this pose" maxlength="40">
       <button type="button" class="ghost" data-act="pose-save" data-id="${esc(person.id)}" ${state.busy ? "disabled" : ""}>Save pose</button>
@@ -2782,10 +2794,23 @@ const actions = {
   },
   "mesh-shape"(button) {
     meshCamera.shape = button.dataset.value || "";
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    document.querySelectorAll("[data-act='mesh-shape']").forEach((chip) => {
+      chip.classList.toggle("on", (chip.dataset.value || "") === (meshCamera.shape || ""));
+    });
+    if (canvas && canvas._geom && canvas._geom.rig && typeof applyClipFrame === "function" && typeof redraw === "function") {
+      applyClipFrame(canvas._geom);
+      redraw(canvas);
+      return;
+    }
     render();
   },
   "mesh-pose"() {
     meshCamera.poseMode = !meshCamera.poseMode;
+    render();
+  },
+  "mesh-bones"() {
+    meshCamera.showBones = meshCamera.showBones === false;
     render();
   },
   "mesh-bone"(button) {
@@ -2893,15 +2918,17 @@ const actions = {
     meshCamera.panX = 0;
     meshCamera.panY = 0;
     meshCamera.roll = 0;
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    const front = window.facingYaw ? facingYaw(canvas && canvas._geom) : 0;
     if (angle === "front") {
-      meshCamera.yaw = 0;
+      meshCamera.yaw = front;
       meshCamera.pitch = 0.05;
     } else if (angle === "side") {
-      meshCamera.yaw = Math.PI / 2;
+      meshCamera.yaw = front - Math.PI / 2;
       meshCamera.pitch = 0.05;
     } else if (angle === "three") {
-      meshCamera.yaw = 0.62;
-      meshCamera.pitch = 0.28;
+      meshCamera.yaw = front - 0.62;
+      meshCamera.pitch = 0.16;
     }
     render();
   },
