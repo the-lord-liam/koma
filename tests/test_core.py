@@ -1885,7 +1885,12 @@ function figure(rightX) {
   add("head", humanoid.neck, [0, 0.15, 0]);
   const leftUpper = add("leftUpperArm", chest, [leftX, 0.05, 0]);
   const leftLower = add("leftLowerArm", leftUpper, [0.3 * leftSign, 0, 0]);
-  add("leftHand", leftLower, [0.25 * leftSign, 0, 0]);
+  const leftHand = add("leftHand", leftLower, [0.25 * leftSign, 0, 0]);
+  const midProx = add("leftMiddleProximal", leftHand, [0.08 * leftSign, 0, 0]);
+  const midMid = add("leftMiddleIntermediate", midProx, [0.06 * leftSign, 0, 0]);
+  add("leftMiddleDistal", midMid, [0.05 * leftSign, 0, 0]);
+  add(null, humanoid.leftMiddleDistal, [0.04 * leftSign, 0, 0]);
+  add("leftThumbProximal", leftHand, [0.02 * leftSign, -0.03, -0.05]);
   const rightUpper = add("rightUpperArm", chest, [rightX, 0.05, 0]);
   const rightLower = add("rightLowerArm", rightUpper, [0.3 * rightSign, 0, 0]);
   add("rightHand", rightLower, [0.25 * rightSign, 0, 0]);
@@ -1958,6 +1963,17 @@ for (const rightX of [0.2, -0.2]) {
   const fightLeftThigh = limb(fightWorlds, "leftUpperLeg", "leftLowerLeg");
   const fightRightThigh = limb(fightWorlds, "rightUpperLeg", "rightLowerLeg");
   const elbowFlex = Math.acos(Math.max(-1, Math.min(1, dot(fightUpper, fightLower)))) * 180 / Math.PI;
+  const pointWorlds = boneWorlds(geom, buildPreset(geom, "point"));
+  const pointUpper = limb(pointWorlds, "rightUpperArm", "rightLowerArm");
+  const pointLower = limb(pointWorlds, "rightLowerArm", "rightHand");
+  const bindFinger = limb(bindWorlds, "leftMiddleProximal", "leftMiddleIntermediate");
+  const fistFinger = limb(fightWorlds, "leftMiddleProximal", "leftMiddleIntermediate");
+  const palm = palmNormal(geom, bindWorlds, "left");
+  const bindHand = quatFromMatrix(bindWorlds[geom.humanoid.leftHand]);
+  const fistHand = quatFromMatrix(fightWorlds[geom.humanoid.leftHand]);
+  const palmLocal = rotateVec(invQuat(bindHand), palm);
+  const fingerBind = dot(rotateVec(invQuat(bindHand), bindFinger), palmLocal);
+  const fingerFist = dot(rotateVec(invQuat(fistHand), fistFinger), palmLocal);
   const hinges = {};
   for (const name of ["relaxed", "walk", "run", "sit", "point", "cross", "fight"]) {
     const posed = boneWorlds(geom, buildPreset(geom, name));
@@ -1989,6 +2005,13 @@ for (const rightX of [0.2, -0.2]) {
     fightElbow: elbowFlex,
     fightLead: dot(fightLeftThigh, axes.forward),
     fightBack: dot(fightRightThigh, axes.forward),
+    fightLowerForward: dot(fightLower, axes.forward),
+    pointUpperUp: dot(pointUpper, axes.up),
+    pointLowerUp: dot(pointLower, axes.up),
+    pointLowerForward: dot(pointLower, axes.forward),
+    pointLowerRight: dot(pointLower, axes.right),
+    fingerBind,
+    fingerFist,
     hyperBefore: dot(before, axes.forward),
     hyperAfter: dot(after, axes.forward),
     legalFlex,
@@ -2011,8 +2034,14 @@ process.stdout.write(JSON.stringify(report));
             self.assertLess(item["sitLowerUp"], -0.5)
             self.assertGreater(item["sitLowerForward"], 0.3)
             self.assertLess(item["fightUpperUp"], 0.15)
-            self.assertGreater(item["fightLowerUp"], 0.4)
+            self.assertLess(item["fightLowerUp"], 0.35)
+            self.assertGreater(item["fightLowerForward"], 0.5)
             self.assertGreater(item["fightElbow"], 70)
+            self.assertLess(abs(item["pointUpperUp"]), 0.2)
+            self.assertLess(abs(item["pointLowerUp"]), 0.2)
+            self.assertGreater(item["pointLowerForward"], 0.7)
+            self.assertGreater(item["pointLowerRight"], 0.1)
+            self.assertGreater(item["fingerFist"], item["fingerBind"] + 0.35)
             self.assertGreater(item["fightLead"], 0.5)
             self.assertLess(item["fightBack"], 0)
             self.assertGreater(item["hyperBefore"], 0.7)

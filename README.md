@@ -82,10 +82,10 @@ Each character can have a 3D model as well as a portrait. Generate it from a pro
 
 The viewer ships with Koma. It does not load three.js, `<model-viewer>`, or anything else from a CDN, so it works with no network. It draws the model's base color, so a toon texture shows up instead of a flat stand-in. Separate parts are placed where the file puts them. The camera fits the model's height, width, and depth, so a tall character or a long animal stays in frame. Drag orbits freely, including upside down. Shift-drag pans, Alt-drag rolls, and scroll zooms. Reset view puts the camera back. Auto-rotate spins the model until you turn it off. Wireframe and Lighting can be on together or one at a time. Grid draws a floor under the figure. Light ground switches the backdrop. Large view fills the window; Close, or Escape, leaves it. On a desktop that allows it, Large view also asks the window to go fullscreen.
 
-Sendagaya Shino (CC0) in the viewer, from a three-quarter front. Grid and lighting are on, and the camera and display controls sit beside the model. The pose handles are hidden.
+Sendagaya Shino (CC0) in the Standing pose, arms down, from a three-quarter front. Grid and lighting are on, and the camera and display controls sit beside the model. The pose handles are hidden.
 
 <p align="center">
-  <img src="docs/3d-viewer.png" width="900" alt="3D viewer on Sendagaya Shino, three-quarter front, grid and lighting on, pose handles hidden">
+  <img src="docs/3d-viewer.png" width="900" alt="3D viewer on Sendagaya Shino standing with arms down, three-quarter front, grid and lighting on, pose handles hidden">
 </p>
 
 ### Textures
@@ -112,10 +112,10 @@ Rest, Joy, and Surprised, still head and shoulders. Joy narrows the eyes and lif
 
 Pose mode bends a rigged GLB or VRM. Pick a bone in the list, grouped by body part, or click it on the model, then drag the red, green, and blue handles or move the X, Y, and Z sliders. Show bones turns those markers and handles off when you want a clean view. It starts on. T / A pose puts back the bind pose stored in the file, which is a T-pose or an A-pose depending on how the model was rigged. Standing, walking, running, sitting, pointing, arms crossed, and fighting stance aim the limbs. VRM files use the humanoid bone map. A rig without that map is matched from bone names such as `LeftUpperArm` or `mixamorig:LeftArm`. Save pose stores the bone rotations and the current expression in the library under that character. Load puts them back. Nothing about posing is uploaded.
 
-Four poses on Sendagaya Shino, from a three-quarter front, with the floor and lighting on. Standing hangs the arms. Sitting rests the hands on the lap and folds the knees forward. Fighting holds a guard: fists near the chin, elbows bent, one foot forward. Pointing reaches one arm out and leaves the other down.
+Four poses on Sendagaya Shino, from a three-quarter front, with the floor and lighting on. Standing hangs the arms. Sitting puts her on a box, knees folded forward, hands in the lap, feet at the floor. Fighting holds both fists in front of the chest, elbows bent, one foot forward, face clear. Pointing sends one arm forward and slightly out at shoulder height and leaves the other arm down.
 
 <p align="center">
-  <img src="docs/3d-pose-grid.png" width="420" alt="Sendagaya Shino standing, sitting with hands on the lap, in a fighting guard, and pointing">
+  <img src="docs/3d-pose-grid.png" width="420" alt="Sendagaya Shino standing, sitting on a box, fists in front of the chest, and pointing at shoulder height">
 </p>
 
 ### Animation
