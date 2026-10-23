@@ -2521,6 +2521,13 @@ function mix(axes, parts) {
   return norm(acc);
 }
 
+function pointLook(axes) {
+  // A level forward arm lifts above the head in three-quarter, because the hand
+  // comes toward the camera. A little down keeps the hand at shoulder height there,
+  // and a little to the character's right keeps it off the cheek.
+  return mix(axes, [["forward", 0.92], ["right", 0.22], ["up", -0.34]]);
+}
+
 function presetTargets(name) {
   const down = (axes) => mix(axes, [["up", -1]]);
   const table = {
@@ -2566,14 +2573,12 @@ function presetTargets(name) {
       rightLowerArm: (axes) => mix(axes, [["up", -0.78], ["forward", 0.55], ["right", -0.22]]),
     },
     point: {
-      // A level forward arm rises into the forehead in three-quarter, because the hand
-      // comes toward the camera. Aim slightly down and out so the hand stays at shoulder
-      // height beside the face, and keep the forearm on the same line so the elbow stays straight.
-      rightUpperArm: (axes) => mix(axes, [["forward", 0.55], ["right", 0.78], ["up", -0.32]]),
-      rightLowerArm: (axes) => mix(axes, [["forward", 0.55], ["right", 0.78], ["up", -0.32]]),
+      // Both arm bones share one aim so the elbow stays straight. pointLook aims the arm
+      // forward at shoulder height. The head is yawed afterwards by aimHeadLevel.
+      rightUpperArm: (axes) => pointLook(axes),
+      rightLowerArm: (axes) => pointLook(axes),
       leftUpperArm: (axes) => mix(axes, [["up", -0.9], ["right", -0.3], ["forward", 0.12]]),
       leftLowerArm: (axes) => mix(axes, [["up", -0.75], ["forward", 0.45]]),
-      head: (axes) => mix(axes, [["up", 1]]),
     },
     cross: {
       leftUpperArm: (axes) => mix(axes, [["right", 0.72], ["forward", 0.55], ["up", -0.2]]),
@@ -2608,8 +2613,32 @@ function buildPreset(geom, name) {
   }
   clampHinges(geom, pose);
   if (name === "fight") curlFingers(geom, pose, bindWorlds);
-  if (name === "point") pointIndex(geom, pose, bindWorlds);
+  if (name === "point") {
+    pointIndex(geom, pose, bindWorlds);
+    aimHeadLevel(geom, pose, bindWorlds, pointLook(axes));
+  }
   return pose;
+}
+
+// Yaw only. Aiming the head bone at world up pitches the face back, and hair that
+// sits behind the skull swings across it. Keep the bind "up" on the body up axis
+// and turn the bind face toward the horizontal part of the point.
+function aimHeadLevel(geom, pose, bindWorlds, look) {
+  if (geom.humanoid.head == null) return;
+  const axes = modelAxes(geom, bindWorlds);
+  const flat = projectPerp(look, axes.up);
+  if (Math.hypot(flat[0], flat[1], flat[2]) < 1e-4) return;
+  const faceTarget = norm(flat);
+  const node = geom.humanoid.head;
+  const bindRot = quatFromMatrix(bindWorlds[node]);
+  const localFace = rotateVec(invQuat(bindRot), axes.forward);
+  const localUp = rotateVec(invQuat(bindRot), axes.up);
+  const worlds = boneWorlds(geom, pose);
+  const parent = geom.rig.parent[node];
+  const parentRot = parent != null && parent >= 0 ? quatFromMatrix(worlds[parent]) : [0, 0, 0, 1];
+  const worldRot = mulQuat(parentRot, geom.rig.nodes[node].r);
+  const aimed = applyTwist(mulQuat(quatFromTo(rotateVec(worldRot, localFace), faceTarget), worldRot), localFace, localUp, axes.up);
+  pose.head = normalizeQuat(mulQuat(invQuat(parentRot), aimed));
 }
 
 function aimBone(geom, pose, bindWorlds, bone, target, lockTwist) {
