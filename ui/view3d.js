@@ -544,6 +544,7 @@ const meshCamera = window.meshCamera = {
   showBones: true,
   preset: "",
   pose: {},
+  fingerCurl: 0,
   bones: [],
   boneKey: "",
   selected: "",
@@ -2301,6 +2302,7 @@ function applyPosePreset(name) {
   if (!geom || !geom.rig) return {};
   meshCamera.preset = !name || name === "bind" ? "" : name;
   meshCamera.pose = meshCamera.preset ? buildPreset(geom, name) : {};
+  meshCamera.fingerCurl = name === "fight" ? 1 : 0;
   applyPose(geom);
   redraw(canvas);
   return meshCamera.pose;
@@ -2557,6 +2559,7 @@ window.boneEuler = boneEuler;
 window.setPoseAxis = setPoseAxis;
 window.refreshMeshPose = refreshMeshPose;
 window.applyPosePreset = applyPosePreset;
+window.applyFingerCurl = applyFingerCurl;
 window.applyMirrorPose = applyMirrorPose;
 window.meshPoseInfo = meshPoseInfo;
 window.sampleChannel = sampleChannel;
@@ -2804,7 +2807,25 @@ function fingerChild(bone) {
   return "";
 }
 
-function curlFingers(geom, pose, bindWorlds) {
+function applyFingerCurl(amount) {
+  const canvas = document.querySelector("canvas[data-mesh-id]");
+  const geom = canvas && canvas._geom;
+  if (!geom || !geom.rig || !geom.humanoid) return;
+  const scale = Math.max(0, Math.min(1, Number(amount) || 0));
+  const pose = Object.assign({}, meshCamera.pose || {});
+  for (const name of FINGER_BONES) delete pose[name];
+  meshCamera.fingerCurl = scale;
+  meshCamera.playing = false;
+  if (geom._animLocals) geom._animLocals = null;
+  if (scale > 0) curlFingers(geom, pose, boneWorlds(geom, {}), scale);
+  meshCamera.pose = pose;
+  applyPose(geom);
+  if (canvas) redraw(canvas);
+}
+
+function curlFingers(geom, pose, bindWorlds, amount) {
+  const scale = amount == null ? 1 : Math.max(0, Math.min(1, Number(amount) || 0));
+  if (scale <= 0) return;
   const segments = [
     ["Thumb", 1.05, 1.85, 2.35],
     ["Index", 1.25, 2.2, 2.85],
@@ -2827,7 +2848,7 @@ function curlFingers(geom, pose, bindWorlds) {
         const dir = boneDirection(geom, bindWorlds, bone, fingerChild(bone));
         if (!dir) return;
         const local = rotateVec(invQuat(bindHand), dir);
-        const curled = rotateToward(local, palmLocal, spec[index + 1]);
+        const curled = rotateToward(local, palmLocal, spec[index + 1] * scale);
         const posed = boneWorlds(geom, pose);
         const target = rotateVec(quatFromMatrix(posed[handNode]), curled);
         aimBone(geom, pose, bindWorlds, bone, target, false);
