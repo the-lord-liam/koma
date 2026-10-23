@@ -542,6 +542,7 @@ const meshCamera = window.meshCamera = {
   thumbFor: {},
   poseMode: false,
   showBones: true,
+  preset: "",
   pose: {},
   bones: [],
   boneKey: "",
@@ -599,6 +600,7 @@ function showMesh(canvas, geom) {
     meshCamera.shapeNames = [];
     meshCamera.shapeKey = "";
     meshCamera.pose = {};
+    meshCamera.preset = "";
     meshCamera.bones = [];
     meshCamera.boneKey = "";
     meshCamera.selected = "";
@@ -953,9 +955,14 @@ function materialAt(geom, index) {
   return geom.materials[index] || { color: [1, 0.28, 0.22], alpha: "OPAQUE", cutoff: 0.5, sampler: null };
 }
 
+function floorLevel(geom) {
+  const half = (geom && geom.half) || [0.5, 0.5, 0.5];
+  return -half[1] - Math.max(half[1], 0.05) * 0.04;
+}
+
 function gridSegments(geom) {
   const half = geom.half || [0.5, 0.5, 0.5];
-  const y = -half[1] - Math.max(half[1], 0.05) * 0.04;
+  const y = floorLevel(geom);
   const span = Math.max(half[0], half[2], 0.25) * 2.4;
   const step = span / 4;
   const lines = [];
@@ -971,17 +978,19 @@ function paintBackdrop(ctx, canvas) {
   const light = meshCamera.backdrop === "light";
   ctx.fillStyle = light ? "#e8e8ec" : "#2a2a2c";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  if (!meshCamera.grid || !canvas._geom) return;
-  ctx.strokeStyle = light ? "rgba(60,60,67,0.45)" : "rgba(210,210,214,0.4)";
-  ctx.lineWidth = 1;
-  for (const segment of gridSegments(canvas._geom)) {
-    const a = projectPoint(segment[0], canvas._orbit, canvas.width, canvas.height);
-    const b = projectPoint(segment[1], canvas._orbit, canvas.width, canvas.height);
-    ctx.beginPath();
-    ctx.moveTo(a.x, a.y);
-    ctx.lineTo(b.x, b.y);
-    ctx.stroke();
+  if (meshCamera.grid && canvas._geom) {
+    ctx.strokeStyle = light ? "rgba(60,60,67,0.45)" : "rgba(210,210,214,0.4)";
+    ctx.lineWidth = 1;
+    for (const segment of gridSegments(canvas._geom)) {
+      const a = projectPoint(segment[0], canvas._orbit, canvas.width, canvas.height);
+      const b = projectPoint(segment[1], canvas._orbit, canvas.width, canvas.height);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+    }
   }
+  paintSeat(ctx, canvas);
 }
 
 function drawGridGl(gl, geom) {
@@ -1014,6 +1023,102 @@ function drawGridGl(gl, geom) {
   gl.depthMask(true);
   gl.drawArrays(gl.LINES, 0, verts.length / 3);
   gl.uniform1f(gl._line, 0);
+}
+
+function seatBox(geom) {
+  if (!geom || meshCamera.preset !== "sit" || !geom.humanoid || !geom._worlds) return null;
+  const center = geom.bindCenter || [0, 0, 0];
+  const drop = geom._seatDrop || 0;
+  const pointOf = (name) => {
+    const node = geom.humanoid[name];
+    const matrix = node == null ? null : geom._worlds[node];
+    if (!matrix) return null;
+    return [matrix[12] - center[0], matrix[13] - center[1] - drop, matrix[14] - center[2]];
+  };
+  const hip = pointOf("hips") || pointOf("leftUpperLeg");
+  const leftKnee = pointOf("leftLowerLeg");
+  const rightKnee = pointOf("rightLowerLeg");
+  if (!hip || !leftKnee || !rightKnee) return null;
+  const floor = floorLevel(geom);
+  const top = Math.min(hip[1], leftKnee[1], rightKnee[1]) - 0.02;
+  if (!(top > floor + 0.04)) return null;
+  const span = Math.max((geom.half && geom.half[0]) || 0.2, 0.2);
+  const pad = Math.max(span * 0.28, 0.16);
+  const x0 = Math.min(hip[0], leftKnee[0], rightKnee[0]) - pad;
+  const x1 = Math.max(hip[0], leftKnee[0], rightKnee[0]) + pad;
+  const kneeZ = (leftKnee[2] + rightKnee[2]) / 2;
+  const forward = kneeZ - hip[2];
+  const sign = forward < 0 ? -1 : 1;
+  const reach = Math.max(Math.abs(forward), 0.12);
+  const back = hip[2] - sign * reach * 0.45;
+  const front = hip[2] + forward * 0.62;
+  return { x0, x1, y0: floor, y1: top, z0: Math.min(back, front), z1: Math.max(back, front) };
+}
+
+function seatCorners(box) {
+  const faces = [
+    [[box.x0, box.y1, box.z0], [box.x1, box.y1, box.z0], [box.x1, box.y1, box.z1], [box.x0, box.y1, box.z1], [0, 1, 0]],
+    [[box.x0, box.y0, box.z1], [box.x1, box.y0, box.z1], [box.x1, box.y0, box.z0], [box.x0, box.y0, box.z0], [0, -1, 0]],
+    [[box.x0, box.y0, box.z0], [box.x0, box.y1, box.z0], [box.x0, box.y1, box.z1], [box.x0, box.y0, box.z1], [-1, 0, 0]],
+    [[box.x1, box.y0, box.z1], [box.x1, box.y1, box.z1], [box.x1, box.y1, box.z0], [box.x1, box.y0, box.z0], [1, 0, 0]],
+    [[box.x0, box.y0, box.z1], [box.x0, box.y1, box.z1], [box.x1, box.y1, box.z1], [box.x1, box.y0, box.z1], [0, 0, 1]],
+    [[box.x1, box.y0, box.z0], [box.x1, box.y1, box.z0], [box.x0, box.y1, box.z0], [box.x0, box.y0, box.z0], [0, 0, -1]],
+  ];
+  return faces;
+}
+
+function drawSeatGl(gl, geom) {
+  const box = seatBox(geom);
+  if (!box) return;
+  const faces = seatCorners(box);
+  const verts = new Float32Array(faces.length * 6 * 8);
+  let at = 0;
+  const push = (point, normal) => {
+    verts[at] = point[0]; verts[at + 1] = point[1]; verts[at + 2] = point[2];
+    verts[at + 3] = normal[0]; verts[at + 4] = normal[1]; verts[at + 5] = normal[2];
+    at += 8;
+  };
+  for (const face of faces) {
+    const normal = face[4];
+    push(face[0], normal); push(face[1], normal); push(face[2], normal);
+    push(face[0], normal); push(face[2], normal); push(face[3], normal);
+  }
+  const buffer = gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+  gl.bufferData(gl.ARRAY_BUFFER, verts, gl.DYNAMIC_DRAW);
+  gl.uniform1f(gl._line, 0);
+  gl.uniform1f(gl._tex, 0);
+  gl.uniform1f(gl._light, meshCamera.light ? 1 : 0);
+  gl.uniform1f(gl._alpha, 0);
+  const tone = meshCamera.backdrop === "light" ? [0.45, 0.34, 0.26] : [0.58, 0.44, 0.32];
+  gl.uniform3f(gl._color, tone[0], tone[1], tone[2]);
+  gl.enableVertexAttribArray(gl._pos);
+  gl.vertexAttribPointer(gl._pos, 3, gl.FLOAT, false, 32, 0);
+  if (gl._normal >= 0) {
+    gl.enableVertexAttribArray(gl._normal);
+    gl.vertexAttribPointer(gl._normal, 3, gl.FLOAT, false, 32, 12);
+  }
+  if (gl._uv >= 0) gl.disableVertexAttribArray(gl._uv);
+  gl.depthMask(true);
+  gl.drawArrays(gl.TRIANGLES, 0, faces.length * 6);
+  gl.deleteBuffer(buffer);
+}
+
+function paintSeat(ctx, canvas) {
+  const box = canvas._geom && seatBox(canvas._geom);
+  if (!box) return;
+  const light = meshCamera.backdrop === "light";
+  ctx.fillStyle = light ? "#8a6a52" : "#a88468";
+  for (const face of seatCorners(box)) {
+    const corners = face.slice(0, 4).map((point) => projectPoint(point, canvas._orbit, canvas.width, canvas.height));
+    ctx.beginPath();
+    ctx.moveTo(corners[0].x, corners[0].y);
+    ctx.lineTo(corners[1].x, corners[1].y);
+    ctx.lineTo(corners[2].x, corners[2].y);
+    ctx.lineTo(corners[3].x, corners[3].y);
+    ctx.closePath();
+    ctx.fill();
+  }
 }
 
 function drawCanvas(canvas) {
@@ -1187,6 +1292,7 @@ function drawGl(canvas) {
   gl.uniformMatrix4fv(gl._mvp, false, new Float32Array(mul(projection, mul(view, model))));
   gl.uniform1i(gl._map, 0);
   if (meshCamera.grid) drawGridGl(gl, geom);
+  drawSeatGl(gl, geom);
   const opaque = [];
   const blended = [];
   for (const range of geom.ranges) {
@@ -1720,6 +1826,30 @@ function boneList(humanoid) {
   return list;
 }
 
+function soleY(geom) {
+  const center = geom.bindCenter || [0, 0, 0];
+  const worlds = geom._worlds || [];
+  const feet = [];
+  for (const name of ["leftFoot", "rightFoot", "leftToes", "rightToes"]) {
+    const node = geom.humanoid[name];
+    if (node == null || !worlds[node]) continue;
+    feet.push([worlds[node][12] - center[0], worlds[node][14] - center[2]]);
+  }
+  if (!feet.length) return null;
+  let minY = Infinity;
+  for (const point of geom.positions) {
+    for (const foot of feet) {
+      const dx = point[0] - foot[0];
+      const dz = point[2] - foot[1];
+      if (dx * dx + dz * dz < 0.0196) {
+        minY = Math.min(minY, point[1]);
+        break;
+      }
+    }
+  }
+  return Number.isFinite(minY) ? minY : null;
+}
+
 function applyPose(geom) {
   if (!geom.rig) return;
   if (!geom.bindPositions) geom.bindPositions = geom.positions.map((point) => [point[0], point[1], point[2]]);
@@ -1743,6 +1873,15 @@ function applyPose(geom) {
   const world = posedPositions(geom);
   const center = geom.bindCenter;
   geom.positions = world.map((point) => [point[0] - center[0], point[1] - center[1], point[2] - center[2]]);
+  geom._seatDrop = 0;
+  if (meshCamera.preset === "sit" && geom.humanoid && !geom._animLocals) {
+    const sole = soleY(geom);
+    const drop = sole == null ? 0 : sole - floorLevel(geom);
+    if (drop > 0.02) {
+      geom._seatDrop = drop;
+      for (const point of geom.positions) point[1] -= drop;
+    }
+  }
   geom._glBuilt = null;
   geom.markers = markerPoints(geom);
   geom.gizmo = gizmoLines(geom);
@@ -1881,7 +2020,7 @@ function markerPoints(geom) {
     const matrix = worlds[geom.humanoid[bone.name]] || identityMatrix();
     return {
       name: bone.name,
-      point: [matrix[12] - shift[0] - center[0], matrix[13] - shift[1] - center[1], matrix[14] - shift[2] - center[2]],
+      point: [matrix[12] - shift[0] - center[0], matrix[13] - shift[1] - center[1] - (geom._seatDrop || 0), matrix[14] - shift[2] - center[2]],
     };
   });
 }
@@ -1893,7 +2032,7 @@ function gizmoLines(geom) {
   if (!matrix) return [];
   const center = geom.bindCenter || [0, 0, 0];
   const shift = geom._animShift || [0, 0, 0];
-  const origin = [matrix[12] - shift[0] - center[0], matrix[13] - shift[1] - center[1], matrix[14] - shift[2] - center[2]];
+  const origin = [matrix[12] - shift[0] - center[0], matrix[13] - shift[1] - center[1] - (geom._seatDrop || 0), matrix[14] - shift[2] - center[2]];
   const len = Math.max((geom.half && geom.half[1]) || 0.2, 0.05) * 0.28;
   return [
     ["x", [matrix[0], matrix[1], matrix[2]], [0.95, 0.28, 0.24]],
@@ -2078,7 +2217,8 @@ function applyPosePreset(name) {
   const canvas = document.querySelector("canvas[data-mesh-id]");
   const geom = canvas && canvas._geom;
   if (!geom || !geom.rig) return {};
-  meshCamera.pose = !name || name === "bind" ? {} : buildPreset(geom, name);
+  meshCamera.preset = !name || name === "bind" ? "" : name;
+  meshCamera.pose = meshCamera.preset ? buildPreset(geom, name) : {};
   applyPose(geom);
   redraw(canvas);
   return meshCamera.pose;
@@ -2426,11 +2566,11 @@ function presetTargets(name) {
       rightLowerArm: (axes) => mix(axes, [["up", -0.78], ["forward", 0.55], ["right", -0.22]]),
     },
     point: {
-      rightUpperArm: (axes) => mix(axes, [["forward", 0.82], ["up", 0.2], ["right", 0.4]]),
-      rightLowerArm: (axes) => mix(axes, [["forward", 0.96], ["up", 0.12], ["right", 0.15]]),
+      rightUpperArm: (axes) => mix(axes, [["forward", 0.92], ["up", 0.02], ["right", 0.38]]),
+      rightLowerArm: (axes) => mix(axes, [["forward", 0.96], ["up", 0], ["right", 0.28]]),
       leftUpperArm: (axes) => mix(axes, [["up", -0.9], ["right", -0.3], ["forward", 0.12]]),
       leftLowerArm: (axes) => mix(axes, [["up", -0.75], ["forward", 0.45]]),
-      head: (axes) => mix(axes, [["up", 0.96], ["right", 0.22], ["forward", 0.12]]),
+      head: (axes) => mix(axes, [["up", 0.98], ["right", 0.16]]),
     },
     cross: {
       leftUpperArm: (axes) => mix(axes, [["right", 0.72], ["forward", 0.55], ["up", -0.2]]),
@@ -2444,10 +2584,10 @@ function presetTargets(name) {
       rightUpperLeg: (axes) => mix(axes, [["up", -0.88], ["forward", -0.35]]),
       leftLowerLeg: (axes) => mix(axes, [["up", -0.98], ["forward", 0.12]]),
       rightLowerLeg: (axes) => mix(axes, [["up", -0.55], ["forward", -0.8]]),
-      leftUpperArm: (axes) => mix(axes, [["up", -0.55], ["forward", 0.48], ["right", -0.68]]),
-      rightUpperArm: (axes) => mix(axes, [["up", -0.5], ["forward", 0.48], ["right", 0.7]]),
-      leftLowerArm: (axes) => mix(axes, [["up", 0.58], ["forward", 0.62], ["right", 0.48]]),
-      rightLowerArm: (axes) => mix(axes, [["up", 0.58], ["forward", 0.62], ["right", -0.48]]),
+      leftUpperArm: (axes) => mix(axes, [["up", -0.42], ["forward", 0.4], ["right", -0.82]]),
+      rightUpperArm: (axes) => mix(axes, [["up", -0.38], ["forward", 0.38], ["right", 0.84]]),
+      leftLowerArm: (axes) => mix(axes, [["up", 0.05], ["forward", 0.8], ["right", 0.58]]),
+      rightLowerArm: (axes) => mix(axes, [["up", 0.05], ["forward", 0.8], ["right", -0.58]]),
     },
   };
   return table[name] || null;
@@ -2460,26 +2600,104 @@ function buildPreset(geom, name) {
   const axes = modelAxes(geom, bindWorlds);
   const pose = {};
   for (const bone of POSE_ORDER) {
-    if (geom.humanoid[bone] == null || !targets[bone]) continue;
-    const node = geom.humanoid[bone];
-    const childName = (CHILD_CHAIN[bone] || []).find((item) => geom.humanoid[item] != null);
-    const dir = boneDirection(geom, bindWorlds, bone, childName);
-    if (!dir) continue;
-    const bindRot = quatFromMatrix(bindWorlds[node]);
-    const localDir = rotateVec(invQuat(bindRot), dir);
-    const worlds = boneWorlds(geom, pose);
-    const parent = geom.rig.parent[node];
-    const parentRot = parent != null && parent >= 0 ? quatFromMatrix(worlds[parent]) : [0, 0, 0, 1];
-    const worldRot = mulQuat(parentRot, geom.rig.nodes[node].r);
-    const worldDir = rotateVec(worldRot, localDir);
-    let aimed = mulQuat(quatFromTo(worldDir, targets[bone](axes)), worldRot);
+    if (!targets[bone]) continue;
+    aimBone(geom, pose, bindWorlds, bone, targets[bone](axes), true);
+  }
+  clampHinges(geom, pose);
+  if (name === "fight") curlFingers(geom, pose, bindWorlds);
+  return pose;
+}
+
+function aimBone(geom, pose, bindWorlds, bone, target, lockTwist) {
+  if (!target || geom.humanoid[bone] == null) return;
+  const node = geom.humanoid[bone];
+  const childName = fingerChild(bone) || (CHILD_CHAIN[bone] || []).find((item) => geom.humanoid[item] != null);
+  const dir = boneDirection(geom, bindWorlds, bone, childName);
+  if (!dir) return;
+  const bindRot = quatFromMatrix(bindWorlds[node]);
+  const localDir = rotateVec(invQuat(bindRot), dir);
+  const worlds = boneWorlds(geom, pose);
+  const parent = geom.rig.parent[node];
+  const parentRot = parent != null && parent >= 0 ? quatFromMatrix(worlds[parent]) : [0, 0, 0, 1];
+  const worldRot = mulQuat(parentRot, geom.rig.nodes[node].r);
+  const worldDir = rotateVec(worldRot, localDir);
+  let aimed = mulQuat(quatFromTo(worldDir, target), worldRot);
+  if (lockTwist) {
+    const axes = modelAxes(geom, bindWorlds);
     const reference = stableAxis(dir, axes);
     const localSide = rotateVec(invQuat(bindRot), projectPerp(axes[reference], dir));
     aimed = applyTwist(aimed, localDir, localSide, axes[reference]);
-    pose[bone] = normalizeQuat(mulQuat(invQuat(parentRot), aimed));
   }
-  clampHinges(geom, pose);
-  return pose;
+  pose[bone] = normalizeQuat(mulQuat(invQuat(parentRot), aimed));
+}
+
+function fingerChild(bone) {
+  const parts = ["Proximal", "Intermediate", "Distal"];
+  for (let index = 0; index < parts.length - 1; index += 1) {
+    if (bone.endsWith(parts[index])) return bone.slice(0, -parts[index].length) + parts[index + 1];
+  }
+  return "";
+}
+
+function curlFingers(geom, pose, bindWorlds) {
+  const segments = [
+    ["Thumb", 1.05, 1.85, 2.35],
+    ["Index", 1.25, 2.2, 2.85],
+    ["Middle", 1.3, 2.3, 2.95],
+    ["Ring", 1.25, 2.2, 2.85],
+    ["Little", 1.15, 2.05, 2.7],
+  ];
+  for (const side of ["left", "right"]) {
+    const handName = `${side}Hand`;
+    if (geom.humanoid[handName] == null) continue;
+    const palm = palmNormal(geom, bindWorlds, side);
+    if (!palm) continue;
+    const handNode = geom.humanoid[handName];
+    const bindHand = quatFromMatrix(bindWorlds[handNode]);
+    const palmLocal = rotateVec(invQuat(bindHand), palm);
+    for (const spec of segments) {
+      ["Proximal", "Intermediate", "Distal"].forEach((part, index) => {
+        const bone = side + spec[0] + part;
+        if (geom.humanoid[bone] == null) return;
+        const dir = boneDirection(geom, bindWorlds, bone, fingerChild(bone));
+        if (!dir) return;
+        const local = rotateVec(invQuat(bindHand), dir);
+        const curled = rotateToward(local, palmLocal, spec[index + 1]);
+        const posed = boneWorlds(geom, pose);
+        const target = rotateVec(quatFromMatrix(posed[handNode]), curled);
+        aimBone(geom, pose, bindWorlds, bone, target, false);
+      });
+    }
+  }
+}
+
+function palmNormal(geom, worlds, side) {
+  const hand = bonePoint(geom, worlds, `${side}Hand`);
+  const finger = bonePoint(geom, worlds, `${side}MiddleProximal`) || bonePoint(geom, worlds, `${side}IndexProximal`);
+  const thumb = bonePoint(geom, worlds, `${side}ThumbProximal`);
+  if (!hand || !finger || !thumb) return null;
+  const along = subVec(finger, hand);
+  const across = subVec(thumb, hand);
+  if (Math.hypot(along[0], along[1], along[2]) < 1e-5 || Math.hypot(across[0], across[1], across[2]) < 1e-5) return null;
+  let palm = norm(cross(along, across));
+  const up = modelAxes(geom, worlds).up;
+  if (dot(palm, up) > 0.25) palm = scaleVec(palm, -1);
+  return palm;
+}
+
+function bonePoint(geom, worlds, name) {
+  if (geom.humanoid[name] == null) return null;
+  const matrix = worlds[geom.humanoid[name]];
+  if (!matrix) return null;
+  return [matrix[12], matrix[13], matrix[14]];
+}
+
+function rotateToward(from, toward, radians) {
+  const start = norm(from);
+  const axis = cross(start, norm(toward));
+  const length = Math.hypot(axis[0], axis[1], axis[2]);
+  if (length < 1e-5) return start;
+  return norm(rotateVec(quatFromAxis(scaleVec(axis, 1 / length), radians), start));
 }
 
 function modelAxes(geom, worlds) {
