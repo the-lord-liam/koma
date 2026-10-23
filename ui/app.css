@@ -422,6 +422,12 @@ body[data-view="setup"] #main { height: 100%; }
 }
 .search-hits .hit-detail { color: #8e8e93; font-size: 12px; }
 .search-hits .meta { padding: 4px 2px; }
+.home-hint {
+  margin: 10px 24px 0;
+  color: #8e8e93;
+  font-size: 13px;
+  max-width: 640px;
+}
 .studio {
   flex: 1;
   min-width: 0;
@@ -1311,6 +1317,34 @@ body[data-studio="1"] input.tree-rename {
   gap: 14px;
 }
 .story-sheet h2 { margin: 0; font-size: 28px; }
+.mood-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 12px;
+}
+.mood-card {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: #2c2c2e;
+  border-radius: 12px;
+  padding: 8px;
+}
+.mood-card img {
+  width: 100%;
+  height: 140px;
+  object-fit: cover;
+  border-radius: 8px;
+  background: #1c1c1e;
+}
+.mood-card figcaption {
+  font-size: 13px;
+  color: #d1d1d6;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .big-field textarea,
 .big-field input[type="text"] {
   font-size: 18px;

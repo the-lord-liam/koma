@@ -280,6 +280,7 @@ function paintHelp() {
       <h2>Shortcuts</h2>
       <ul>
         <li><kbd>?</kbd> Show or hide this list</li>
+        <li><kbd>R</kbd> Open the reference board for this book</li>
         <li><kbd>1</kbd>–<kbd>6</kbd> Lasso, Select, Text, Sketch, Effects, Imagine</li>
         <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> Undo a page edit</li>
         <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> Redo</li>
@@ -448,7 +449,7 @@ function renderHome() {
     : `<span class="board-sub">${esc(board.title || "Untitled")}</span>`;
   const picture = illust && illust.imageUrl ? `<img src="${esc(illust.imageUrl)}" alt="">` : "";
   const hits = (state.searchHits || []).map((hit) => `
-    <button type="button" class="hit" data-act="open-hit" data-project="${esc(hit.projectId)}" data-chapter="${esc(hit.chapterId || "")}" data-page="${esc(hit.pageId || "")}" data-panel="${esc(hit.panelId || "")}" data-note="${esc(hit.noteId || "")}" data-character="${esc(hit.characterId || "")}">
+    <button type="button" class="hit" data-act="open-hit" data-project="${esc(hit.projectId)}" data-chapter="${esc(hit.chapterId || "")}" data-page="${esc(hit.pageId || "")}" data-panel="${esc(hit.panelId || "")}" data-note="${esc(hit.noteId || "")}" data-character="${esc(hit.characterId || "")}" data-mood="${esc(hit.refId || "")}">
       <span class="hit-label">${esc(hit.label)}</span>
       <span class="hit-detail">${esc(hit.detail || "")}</span>
     </button>
@@ -459,13 +460,14 @@ function renderHome() {
   return `
     <div class="home-wrap">
       <div class="library-search">
-        <input id="library-search" type="search" placeholder="Search titles, chapters, dialogue, notes, cast" value="${esc(state.searchQuery || "")}" ${state.busy ? "disabled" : ""}>
+        <input id="library-search" type="search" placeholder="Search titles, chapters, dialogue, notes, cast, references" value="${esc(state.searchQuery || "")}" ${state.busy ? "disabled" : ""}>
         <button type="button" data-act="search-library" ${state.busy ? "disabled" : ""}>Search</button>
       </div>
       ${results}
+      <p class="home-hint">A manga is a book. An illustration is one picture. Inside a book, References on Story keeps pictures from this computer. Press ? for shortcuts.</p>
       <div class="studio">
       <div class="board-col">
-        <button type="button" class="board-face" style="${boardStyle(board)}" data-act="open-manga" ${state.busy ? "disabled" : ""}>
+        <button type="button" class="board-face" style="${boardStyle(board)}" data-act="open-manga" title="Open this manga" ${state.busy ? "disabled" : ""}>
           ${mangaFace(board)}
         </button>
         <div class="board-caption">
@@ -478,7 +480,7 @@ function renderHome() {
         </div>
       </div>
       <div class="board-col">
-        <button type="button" class="board-face" style="${ratioStyle(illust ? illust.aspect : "2:3")}" data-act="open-illust" ${state.busy ? "disabled" : ""}>
+        <button type="button" class="board-face" style="${ratioStyle(illust ? illust.aspect : "2:3")}" data-act="open-illust" title="Open this illustration" ${state.busy ? "disabled" : ""}>
           ${picture}
         </button>
         <div class="board-caption">
@@ -1001,8 +1003,8 @@ function renderCast() {
     </button>
   `;
   }).join("");
-  const form = selected ? characterFields(selected) : `<p class="meta">Add a character. A portrait is the face later panels follow.</p>`;
-  const stage = selected ? characterStage(selected) : `<div class="stage"><div class="empty">Add a character to start the cast.</div></div>`;
+  const form = selected ? characterFields(selected) : `<p class="meta">Add a character when you want a face the pages can follow. You can import a picture you already have.</p>`;
+  const stage = selected ? characterStage(selected) : `<div class="stage"><div class="empty">Add a character when you want a face the pages can follow. You can import a picture you already have.</div></div>`;
   const rail = `
     <button type="button" class="ghost" data-act="add-character">Add character</button>
     <div class="rail-list">${list}</div>
@@ -1260,15 +1262,15 @@ function renderPlaces() {
       <button type="button" class="ghost" data-act="import-ref" data-owner="location" data-id="${esc(selected.id)}" ${state.busy ? "disabled" : ""}>Import picture</button>
       <textarea id="place-note" placeholder="Revise the view. Later afternoon, wet pavement."></textarea>
       <button type="button" class="ghost" data-act="revise-location" data-id="${esc(selected.id)}" ${state.busy ? "disabled" : ""}>Revise place</button>
-    ` : `<p class="meta">Add a place the panels can return to.</p>`}
+    ` : `<p class="meta">Add a place when a scene needs a location. A picture you already have can be the view.</p>`}
   `;
-  const stage = `
+  const stage = selected ? `
     <div class="stage">
       <div class="hero-art wide">
-        ${picture ? `<img src="${esc(picture.url)}" alt="">` : `<span class="hero-name">${esc(selected ? selected.name : "Place")}</span>`}
+        ${picture ? `<img src="${esc(picture.url)}" alt="">` : `<span class="hero-name">${esc(selected.name)}</span>`}
       </div>
     </div>
-  `;
+  ` : `<div class="stage"><div class="empty">Add a place when a scene needs a location. A picture you already have can be the view.</div></div>`;
   return desk(rail, stage);
 }
 
@@ -1303,7 +1305,8 @@ function renderStory() {
   const rail = `
     <div class="rail-tree">
       ${storyOutline(project, volume, chapter)}
-      <button type="button" class="page-link ${focusClass("idea")}" data-act="story-focus" data-focus="idea">Idea</button>
+      <button type="button" class="page-link ${focusClass("idea")}" data-act="story-focus" data-focus="idea" title="The premise of the book">Idea</button>
+      <button type="button" class="page-link ${focusClass("mood")}" data-act="story-focus" data-focus="mood" title="Pictures from this computer, kept with the book">References</button>
       <p class="rail-kicker">Notes</p>
       ${noteButtons}
       ${treePlus("add-note")}
@@ -1368,6 +1371,20 @@ function storyStage(project, volume, chapter, pageRow, note) {
       <label class="field big-field">Note
         <textarea data-save="note" data-field="body" data-entity="${esc(note.id)}">${esc(note.body || "")}</textarea>
       </label>
+    `;
+  } else if (state.storyFocus === "mood") {
+    const moods = state.tree.moods || [];
+    const tiles = moods.map((ref) => `
+      <figure class="mood-card">
+        <img src="${esc(ref.url)}" alt="${esc(ref.label || "Reference")}">
+        <figcaption>${esc(ref.label || "Reference")}</figcaption>
+        <button type="button" class="danger quiet" data-act="delete-mood" data-id="${esc(ref.id)}" title="Remove this picture from the board">Remove</button>
+      </figure>
+    `).join("");
+    body = `
+      <h2>References</h2>
+      <p class="meta">Pictures already on your machine. They stay with this book and are not uploaded. Use them while you write, or as a reminder of a pose, a place, or a color.</p>
+      ${moods.length ? `<div class="mood-grid">${tiles}</div>` : `<div class="empty">No pictures yet. Add one from a folder on this computer. Press ? for shortcuts.</div>`}
     `;
   } else {
     body = `
@@ -1434,6 +1451,14 @@ function storySide(project, volume, chapter, pageRow, note) {
       <p class="meta">${esc(pageRow.page.layout)} · ${pageRow.page.panels.length} panels</p>
       <button type="button" class="rail-go" data-act="open-page" data-id="${esc(pageRow.page.id)}">Draw this page</button>
       <button type="button" class="danger quiet" data-act="delete-page" data-id="${esc(pageRow.page.id)}">Delete page</button>
+    `;
+  }
+  if (state.storyFocus === "mood") {
+    const count = (state.tree.moods || []).length;
+    return `
+      <p class="rail-kicker">Reference board</p>
+      <p class="meta">${count ? `${count} picture${count === 1 ? "" : "s"} on this book.` : "Nothing here yet."} Koma copies a file you already have. It does not open a website or send the picture anywhere.</p>
+      <button type="button" class="rail-go" data-act="import-ref" data-owner="project" data-id="${esc(project.id)}" data-kind="mood" title="Copy a picture from this computer onto the board" ${state.busy ? "disabled" : ""}>Add picture</button>
     `;
   }
   if (state.storyFocus === "notes" && note) {
@@ -1595,7 +1620,7 @@ function renderPages() {
   `;
   const stage = row
     ? pageStage(row, project)
-    : `<div class="stage"><div class="empty">Add a chapter and a page to start drawing.</div></div>`;
+    : `<div class="stage"><div class="empty">Add a chapter and a page when you are ready to draw. Press ? for the page shortcuts.</div></div>`;
   return desk(rail, stage, toolDock(row ? row.page : null, row ? currentPanel() : null), "rail-tools");
 }
 
@@ -1909,7 +1934,7 @@ function renderRead() {
   if (!list.length) {
     return desk(
       `<p class="rail-kicker">Read</p><p class="meta">Add a chapter, then read it here.</p>`,
-      `<div class="stage"><div class="empty">Add a chapter, then read it here as finished pages.</div></div>`,
+      `<div class="stage"><div class="empty">Add a chapter, then the finished pages show up here. Arrow keys turn the page once there is one to turn.</div></div>`,
     );
   }
   const selected = list.find((chapter) => chapter.id === state.readChapterId) || list[0];
@@ -2498,6 +2523,7 @@ const actions = {
     const chapterId = button.dataset.chapter || "";
     const noteId = button.dataset.note || "";
     const characterId = button.dataset.character || "";
+    const moodId = button.dataset.mood || "";
     return run("Opening…", async () => {
       absorb(await rpc("project.open", { id: projectId }));
       state.mangaId = projectId;
@@ -2522,6 +2548,11 @@ const actions = {
         state.storyFocus = "notes";
         state.storyFocusId = noteId;
         state.storyNoteId = noteId;
+      } else if (moodId) {
+        state.view = "story";
+        state.pageId = null;
+        state.panelId = null;
+        state.storyFocus = "mood";
       } else {
         state.view = "story";
         state.pageId = null;
@@ -3024,6 +3055,37 @@ const actions = {
     if (!state.refId) return;
     return run("Setting the identity…", async () => {
       absorb(await rpc("character.primary", { refId: state.refId }));
+    });
+  },
+  "delete-mood"(button) {
+    if (!button.dataset.id || !confirm("Remove this picture from the reference board?")) return;
+    return run("Removing…", async () => {
+      absorb(await rpc("mood.delete", { refId: button.dataset.id }));
+    });
+  },
+  "open-mood"() {
+    const go = () => {
+      state.view = "story";
+      state.storyFocus = "mood";
+      state.pageId = null;
+      state.panelId = null;
+      state.helpOpen = false;
+      state.menuOpen = false;
+    };
+    if (state.tree && state.tree.project && inStudio()) {
+      go();
+      render();
+      return;
+    }
+    const board = currentBoard();
+    if (!board.projectId) {
+      toast("Open a manga first. The reference board lives with the book.");
+      return;
+    }
+    return run("Opening the reference board…", async () => {
+      absorb(await rpc("project.open", { id: board.projectId }));
+      state.mangaId = board.projectId;
+      go();
     });
   },
   "delete-ref"() {
@@ -4024,6 +4086,12 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   const typing = event.target && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA" || event.target.tagName === "SELECT" || event.target.isContentEditable);
+  if (!typing && !state.busy && !event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "r" && !(window.meshCamera && meshCamera.large)) {
+    event.preventDefault();
+    const act = actions["open-mood"];
+    if (act) Promise.resolve(act()).catch((error) => toast(error.message || String(error)));
+    return;
+  }
   if (!typing && event.key === "?") {
     event.preventDefault();
     state.helpOpen = !state.helpOpen;
