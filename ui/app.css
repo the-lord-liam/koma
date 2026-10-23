@@ -356,6 +356,12 @@ body[data-view="setup"] #top {
   border-bottom: 0;
   z-index: 2;
 }
+body[data-view="home"] #top {
+  pointer-events: none;
+}
+body[data-view="home"] #top button {
+  pointer-events: auto;
+}
 body[data-view="home"] #main,
 body[data-view="setup"] #main { height: 100%; }
 
