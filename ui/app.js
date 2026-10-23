@@ -1125,6 +1125,8 @@ function characterMesh(person) {
         </div>
         <div class="row">
           <button type="button" class="ghost" data-act="mesh-shot" data-id="${esc(person.id)}" data-mesh="${esc(current.id)}" ${state.busy ? "disabled" : ""}>Save this angle</button>
+          <button type="button" class="ghost" data-act="mesh-turntable" data-id="${esc(current.id)}" data-kind="gif" ${state.busy ? "disabled" : ""}>Turntable GIF</button>
+          <button type="button" class="ghost" data-act="mesh-turntable" data-id="${esc(current.id)}" data-kind="png" ${state.busy ? "disabled" : ""}>Turntable PNGs</button>
           <button type="button" class="ghost" data-act="mesh-shot" data-id="${esc(person.id)}" data-mesh="${esc(current.id)}" data-panel="${esc(state.panelId || "")}" ${state.busy || !state.panelId ? "disabled" : ""}>Use on panel</button>
           <button type="button" class="ghost" data-act="export-mesh" data-id="${esc(current.id)}" data-format="glb" ${state.busy ? "disabled" : ""}>Export GLB</button>
           <button type="button" class="ghost" data-act="export-posed" data-id="${esc(current.id)}" ${state.busy ? "disabled" : ""}>Export posed GLB</button>
@@ -2094,6 +2096,46 @@ function flashStatus(text) {
   }, 1400);
 }
 
+function turntableFrames(canvas) {
+  const count = 24;
+  const yaw = meshCamera.yaw;
+  const auto = meshCamera.auto;
+  const playing = meshCamera.playing;
+  meshCamera.auto = false;
+  meshCamera.playing = false;
+  const shots = [];
+  try {
+    for (let step = 0; step < count; step += 1) {
+      meshCamera.yaw = yaw + (Math.PI * 2 * step) / count;
+      redraw(canvas);
+      shots.push(turntablePng(canvas, 480));
+    }
+  } finally {
+    meshCamera.yaw = yaw;
+    meshCamera.auto = auto;
+    meshCamera.playing = playing;
+    redraw(canvas);
+  }
+  if (shots.length !== count || shots.some((shot) => !shot || shot.length < 64)) {
+    throw new Error("Could not read the view.");
+  }
+  return shots;
+}
+
+function turntablePng(canvas, limit) {
+  const scale = Math.min(1, limit / Math.max(canvas.width, canvas.height, 1));
+  const width = Math.max(2, Math.round(canvas.width * scale));
+  const height = Math.max(2, Math.round(canvas.height * scale));
+  if (scale === 1) return canvas.toDataURL("image/png");
+  const copy = document.createElement("canvas");
+  copy.width = width;
+  copy.height = height;
+  const ctx = copy.getContext("2d");
+  if (!ctx) throw new Error("Could not read the view.");
+  ctx.drawImage(canvas, 0, 0, width, height);
+  return copy.toDataURL("image/png");
+}
+
 const actions = {
   "go-home"() {
     state.menuOpen = false;
@@ -2982,6 +3024,27 @@ const actions = {
       meshCamera.pitch = 0.16;
     }
     render();
+  },
+  "mesh-turntable"(button) {
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    if (!canvas || canvas.dataset.ready !== "1" || !window.redraw) {
+      toast("The model is still loading.");
+      return;
+    }
+    const kind = button.dataset.kind === "png" ? "png" : "gif";
+    const meshId = button.dataset.id;
+    let frames;
+    try {
+      frames = turntableFrames(canvas);
+    } catch (_error) {
+      toast("Could not read the view.");
+      return;
+    }
+    const label = kind === "png" ? "Saving the turntable frames…" : "Saving the turntable…";
+    return run(label, async () => {
+      const result = await rpc("character.mesh_turntable", { id: meshId, kind, frames });
+      toast("Saved " + result.path, "ok");
+    });
   },
   "mesh-shot"(button) {
     const canvas = document.querySelector("canvas[data-mesh-id]");
