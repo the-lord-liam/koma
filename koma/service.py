@@ -2140,7 +2140,7 @@ class Studio:
             path = self._render(project, chapter, page)
             return {"path": str(path), "folder": str(path.parent)}
         except OSError as error:
-            raise ValueError("Koma cannot write the export. The folder may be read-only.") from error
+            raise _export_failure(error) from error
 
     def export_chapter(self, params: dict) -> dict:
         try:
@@ -2176,7 +2176,7 @@ class Studio:
                 return {"path": str(pdf_path), "folder": str(folder)}
             return {"path": str(paths[-1]), "folder": str(folder)}
         except OSError as error:
-            raise ValueError("Koma cannot write the export. The folder may be read-only.") from error
+            raise _export_failure(error) from error
 
     def _panel_rows(self, page: dict) -> list[dict]:
         count = _page_count(page)
@@ -2897,6 +2897,13 @@ def _slot_count(layout: str) -> int:
     if layout not in LAYOUTS:
         return 1
     return len(LAYOUTS[layout][1])
+
+
+def _export_failure(error: OSError) -> ValueError:
+    """A bad page image is not a read-only folder. Pillow reports it as an OSError."""
+    if isinstance(error, Image.UnidentifiedImageError):
+        return ValueError("Koma could not read a page image for that export.")
+    return ValueError("Koma cannot write the export. The folder may be read-only.")
 
 
 def _pdf_dpi(project: dict, image) -> float:

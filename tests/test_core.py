@@ -945,6 +945,44 @@ class CoreTests(unittest.TestCase):
         self.assertAlmostEqual(height_pt, project["trimH"] / 25.4 * 72, delta=1)
         self.assertLess(width_pt, project["pageWidth"] / 2)
 
+    def test_unreadable_export_image_is_not_a_read_only_folder(self):
+        from PIL import UnidentifiedImageError
+        from unittest.mock import patch
+
+        prepared = self.studio.canvas_prepare(
+            {"title": "Loose", "kind": "manga", "preset": "b6", "quality": "print", "create": True}
+        )
+        chapter = prepared["tree"]["chapters"][0]
+        self.studio.page_create({"chapterId": chapter["id"], "layout": "full"})
+        real_open = Image.open
+
+        def opened(path, *args, **kwargs):
+            name = Path(str(path)).name
+            if name.startswith("ch") and name.endswith(".png"):
+                raise UnidentifiedImageError("not a png")
+            return real_open(path, *args, **kwargs)
+
+        with patch("PIL.Image.open", opened):
+            with self.assertRaises(ValueError) as raised:
+                self.studio.export_chapter({"chapterId": chapter["id"], "format": "pdf"})
+        message = str(raised.exception)
+        self.assertIn("could not read", message.lower())
+        self.assertNotIn("read-only", message.lower())
+
+        exported = self.studio.export_chapter({"chapterId": chapter["id"], "format": "pdf"})
+        self.assertTrue(exported["path"].endswith(".pdf"))
+        self.assertTrue(Path(exported["path"]).is_file())
+
+        blocker = Path(self.tmp.name) / "export-blocked-pdf"
+        blocker.write_text("nope", encoding="utf-8")
+        os.environ["KOMA_EXPORT_DIR"] = str(blocker)
+        try:
+            with self.assertRaises(ValueError) as blocked:
+                self.studio.export_chapter({"chapterId": chapter["id"], "format": "pdf"})
+            self.assertIn("read-only", str(blocked.exception).lower())
+        finally:
+            os.environ["KOMA_EXPORT_DIR"] = str(Path(self.tmp.name) / "export")
+
     def test_search_duplicate_chapter_and_failures(self):
         import urllib.error
         from unittest.mock import patch
