@@ -1826,11 +1826,19 @@ function boneList(humanoid) {
   return list;
 }
 
+function contactY(geom) {
+  return nearBoneY(geom, ["leftFoot", "rightFoot", "leftToes", "rightToes", "rightLowerLeg"]);
+}
+
 function soleY(geom) {
+  return nearBoneY(geom, ["leftFoot", "rightFoot", "leftToes", "rightToes"]);
+}
+
+function nearBoneY(geom, names) {
   const center = geom.bindCenter || [0, 0, 0];
   const worlds = geom._worlds || [];
   const feet = [];
-  for (const name of ["leftFoot", "rightFoot", "leftToes", "rightToes"]) {
+  for (const name of names) {
     const node = geom.humanoid[name];
     if (node == null || !worlds[node]) continue;
     feet.push([worlds[node][12] - center[0], worlds[node][14] - center[2]]);
@@ -1874,8 +1882,9 @@ function applyPose(geom) {
   const center = geom.bindCenter;
   geom.positions = world.map((point) => [point[0] - center[0], point[1] - center[1], point[2] - center[2]]);
   geom._seatDrop = 0;
-  if (meshCamera.preset === "sit" && geom.humanoid && !geom._animLocals) {
-    const sole = soleY(geom);
+  const plants = meshCamera.preset === "sit" || meshCamera.preset === "kneel" || meshCamera.preset === "crouch" || meshCamera.preset === "stride";
+  if (plants && geom.humanoid && !geom._animLocals) {
+    const sole = meshCamera.preset === "kneel" ? contactY(geom) : soleY(geom);
     const drop = sole == null ? 0 : sole - floorLevel(geom);
     if (drop > 0.02) {
       geom._seatDrop = drop;
@@ -2660,6 +2669,52 @@ function presetTargets(name) {
       leftLowerArm: (axes) => mix(axes, [["right", 0.9], ["up", 0.12], ["forward", 0.2]]),
       rightLowerArm: (axes) => mix(axes, [["right", -0.9], ["up", 0.12], ["forward", 0.2]]),
     },
+    wave: {
+      // Upper arm up and out. Forearm folds up beside the head, not across the face.
+      rightUpperArm: (axes) => mix(axes, [["up", 0.58], ["right", 0.78], ["forward", 0.12]]),
+      rightLowerArm: (axes) => mix(axes, [["up", 0.62], ["right", 0.08], ["forward", 0.72]]),
+      leftUpperArm: (axes) => mix(axes, [["up", -0.92], ["right", -0.28], ["forward", 0.18]]),
+      leftLowerArm: (axes) => mix(axes, [["up", -0.78], ["right", -0.1], ["forward", 0.5]]),
+      leftUpperLeg: down, rightUpperLeg: down, leftLowerLeg: down, rightLowerLeg: down,
+    },
+    kneel: {
+      spine: (axes) => mix(axes, [["up", 0.97], ["forward", 0.2]]),
+      rightUpperLeg: (axes) => mix(axes, [["up", -0.93], ["forward", 0.32]]),
+      rightLowerLeg: (axes) => mix(axes, [["forward", -0.96], ["up", -0.08]]),
+      rightFoot: (axes) => mix(axes, [["forward", -0.9], ["up", 0.05]]),
+      leftUpperLeg: (axes) => mix(axes, [["forward", 0.99], ["up", 0.08]]),
+      leftLowerLeg: (axes) => mix(axes, [["up", -0.68], ["forward", 0.68]]),
+      leftFoot: (axes) => mix(axes, [["forward", 0.92], ["up", -0.28]]),
+      leftUpperArm: (axes) => mix(axes, [["up", -0.9], ["right", -0.28], ["forward", 0.2]]),
+      rightUpperArm: (axes) => mix(axes, [["up", -0.88], ["right", 0.3], ["forward", 0.22]]),
+      leftLowerArm: (axes) => mix(axes, [["up", -0.75], ["forward", 0.5]]),
+      rightLowerArm: (axes) => mix(axes, [["up", -0.72], ["forward", 0.55]]),
+    },
+    stride: {
+      spine: (axes) => mix(axes, [["up", 0.9], ["forward", 0.4]]),
+      chest: (axes) => mix(axes, [["up", 0.88], ["forward", 0.42]]),
+      leftUpperLeg: (axes) => mix(axes, [["up", -0.4], ["forward", 0.9]]),
+      rightUpperLeg: (axes) => mix(axes, [["up", -0.55], ["forward", -0.8]]),
+      leftLowerLeg: (axes) => mix(axes, [["up", -0.85], ["forward", -0.4]]),
+      rightLowerLeg: (axes) => mix(axes, [["up", -0.25], ["forward", -0.95]]),
+      leftUpperArm: (axes) => mix(axes, [["up", -0.55], ["forward", -0.75], ["right", -0.2]]),
+      rightUpperArm: (axes) => mix(axes, [["up", -0.4], ["forward", 0.85], ["right", 0.2]]),
+      leftLowerArm: (axes) => mix(axes, [["up", -0.7], ["forward", -0.5]]),
+      rightLowerArm: (axes) => mix(axes, [["up", -0.35], ["forward", 0.85]]),
+    },
+    crouch: {
+      spine: (axes) => mix(axes, [["up", 0.86], ["forward", 0.48]]),
+      leftUpperLeg: (axes) => mix(axes, [["forward", 0.7], ["up", -0.68]]),
+      rightUpperLeg: (axes) => mix(axes, [["forward", 0.7], ["up", -0.68]]),
+      leftLowerLeg: (axes) => mix(axes, [["up", -0.9], ["forward", -0.35]]),
+      rightLowerLeg: (axes) => mix(axes, [["up", -0.9], ["forward", -0.35]]),
+      leftFoot: (axes) => mix(axes, [["forward", 0.45], ["up", -0.88]]),
+      rightFoot: (axes) => mix(axes, [["forward", 0.45], ["up", -0.88]]),
+      leftUpperArm: (axes) => mix(axes, [["forward", 0.72], ["up", -0.55], ["right", -0.25]]),
+      rightUpperArm: (axes) => mix(axes, [["forward", 0.72], ["up", -0.55], ["right", 0.25]]),
+      leftLowerArm: (axes) => mix(axes, [["up", -0.7], ["forward", 0.6], ["right", 0.2]]),
+      rightLowerArm: (axes) => mix(axes, [["up", -0.7], ["forward", 0.6], ["right", -0.2]]),
+    },
     fight: {
       spine: (axes) => mix(axes, [["up", 0.92], ["forward", 0.28]]),
       leftUpperLeg: (axes) => mix(axes, [["up", -0.55], ["forward", 0.78]]),
@@ -2690,6 +2745,9 @@ function buildPreset(geom, name) {
   if (name === "point") {
     pointIndex(geom, pose, bindWorlds);
     aimHeadLevel(geom, pose, bindWorlds, pointLook(axes));
+  }
+  if (name === "wave" || name === "kneel" || name === "stride" || name === "crouch") {
+    aimHeadLevel(geom, pose, bindWorlds, axes.forward);
   }
   return pose;
 }

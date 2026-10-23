@@ -1178,6 +1178,10 @@ function poseControls(person, current) {
     ["point", "Pointing"],
     ["cross", "Arms crossed"],
     ["fight", "Fighting"],
+    ["wave", "Wave"],
+    ["kneel", "Kneeling"],
+    ["stride", "Mid-stride"],
+    ["crouch", "Crouch"],
   ];
   if (!flags.poseMode) {
     return `
@@ -1229,7 +1233,7 @@ function poseControls(person, current) {
     <div class="mesh-sliders">
       ${["x", "y", "z"].map((axis) => `<label>${axis.toUpperCase()} <input type="range" min="-180" max="180" step="1" data-pose-axis="${axis}" value="${euler[axis]}" aria-label="${axis.toUpperCase()} rotation"></label>`).join("")}
     </div>
-    <p class="meta">Click a bone here or on the model. Drag a handle, or use the sliders. Mirror copies the left arm and leg onto the right. Show bones turns the markers and handles on or off, and it starts on. T / A pose restores the file's bind pose.</p>
+    <p class="meta">Click a bone here or on the model. Drag a handle, or use the sliders. Mirror copies the left arm and leg onto the right. Wave, Kneeling, Mid-stride, and Crouch are built in. Show bones turns the markers and handles on or off, and it starts on. T / A pose restores the file's bind pose.</p>
     <div class="row mesh-tools">
       <input id="pose-name" class="pose-name" type="text" data-save="local" data-field="poseName" data-entity="" value="${esc(state.poseName || "")}" placeholder="Name this pose" maxlength="40">
       <button type="button" class="ghost" data-act="pose-save" data-id="${esc(person.id)}" ${state.busy ? "disabled" : ""}>Save pose</button>
