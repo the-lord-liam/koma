@@ -2121,11 +2121,21 @@ class Studio:
                         archive.write(path, f"{index:03d}{Path(path).suffix or '.png'}")
                 return {"path": str(cbz_path), "folder": str(folder)}
             if params.get("format") == "pdf":
-                images = [Image.open(path).convert("RGB") for path in paths]
-                pdf_path = folder / f"ch{chapter['idx'] + 1:02d}.pdf"
-                images[0].save(pdf_path, save_all=True, append_images=images[1:])
-                for image in images:
-                    image.close()
+                images = []
+                try:
+                    for path in paths:
+                        with Image.open(path) as opened:
+                            images.append(opened.convert("RGB"))
+                    pdf_path = folder / f"ch{chapter['idx'] + 1:02d}.pdf"
+                    images[0].save(
+                        pdf_path,
+                        save_all=True,
+                        append_images=images[1:],
+                        resolution=_pdf_dpi(project, images[0]),
+                    )
+                finally:
+                    for image in images:
+                        image.close()
                 return {"path": str(pdf_path), "folder": str(folder)}
             return {"path": str(paths[-1]), "folder": str(folder)}
         except OSError as error:
@@ -2850,6 +2860,20 @@ def _slot_count(layout: str) -> int:
     if layout not in LAYOUTS:
         return 1
     return len(LAYOUTS[layout][1])
+
+
+def _pdf_dpi(project: dict, image) -> float:
+    """DPI that makes the PDF page the book's finish size, not one pixel per point."""
+    try:
+        w_mm = float(project.get("trim_w_mm") or 0)
+        h_mm = float(project.get("trim_h_mm") or 0)
+    except (TypeError, ValueError):
+        return 72.0
+    if w_mm <= 0 or h_mm <= 0 or image.width <= 0 or image.height <= 0:
+        return 72.0
+    dpi_w = image.width / (w_mm / 25.4)
+    dpi_h = image.height / (h_mm / 25.4)
+    return (dpi_w + dpi_h) / 2.0
 
 
 def _page_slots_ltr(page: dict) -> list[dict] | None:
