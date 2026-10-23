@@ -1119,6 +1119,7 @@ function characterMesh(person) {
           <button type="button" class="chip ${flags.wire ? "on" : ""}" data-act="mesh-wire">Wireframe</button>
           <button type="button" class="chip ${flags.light ? "on" : ""}" data-act="mesh-light">Lighting</button>
           <button type="button" class="chip ${flags.grid ? "on" : ""}" data-act="mesh-grid">Grid</button>
+          <button type="button" class="chip ${flags.outline ? "on" : ""}" data-act="mesh-outline">Outline</button>
           <button type="button" class="chip ${flags.backdrop === "light" ? "on" : ""}" data-act="mesh-ground">${flags.backdrop === "light" ? "Dark ground" : "Light ground"}</button>
           <button type="button" class="chip ${flags.large ? "on" : ""}" data-act="mesh-large">${flags.large ? "Close" : "Large view"}</button>
         </div>
@@ -2823,6 +2824,10 @@ const actions = {
   },
   "mesh-grid"() {
     meshCamera.grid = !meshCamera.grid;
+    render();
+  },
+  "mesh-outline"() {
+    meshCamera.outline = !meshCamera.outline;
     render();
   },
   "mesh-ground"() {
