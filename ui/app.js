@@ -287,7 +287,7 @@ function paintHelp() {
         <li><kbd>[</kbd> <kbd>]</kbd> Move the selected panel earlier or later</li>
         <li><kbd>Delete</kbd> Delete the selected panel</li>
         <li><kbd>←</kbd> <kbd>→</kbd> Turn the page in Read</li>
-        <li>3D model: drag orbits, Shift-drag pans, Alt-drag rolls, scroll zooms. Pose rotates a rigged model. Mirror copies the left arm and leg onto the right. Grid, background, and Save this angle sit under the model</li>
+        <li>3D model: drag orbits, Shift-drag pans, Alt-drag rolls, scroll zooms. Pose rotates a rigged model. <kbd>M</kbd> copies the left arm and leg onto the right. Grid, background, and Save this angle sit under the model</li>
       </ul>
       <p class="meta">Drag a page in the list, or a panel on the sheet, to reorder it. The Earlier and Later buttons do the same. The last 20 edits on a page stay on disk.</p>
       <button type="button" class="ghost" data-act="close-help">Close</button>
@@ -1220,7 +1220,7 @@ function poseControls(person, current) {
       <button type="button" class="chip on" data-act="mesh-pose">Pose</button>
       <button type="button" class="chip ${flags.showBones !== false ? "on" : ""}" data-act="mesh-bones">Show bones</button>
       ${presets.map(([value, label]) => `<button type="button" class="chip" data-act="mesh-preset" data-value="${value}">${label}</button>`).join("")}
-      <button type="button" class="chip" data-act="mesh-mirror" title="Copy the left arm and leg onto the right">Mirror</button>
+      <button type="button" class="chip" data-act="mesh-mirror" title="Copy the left arm and leg onto the right (M)">Mirror</button>
     </div>
     <div class="mesh-bones" data-scroll="pose-bones">
       ${body}
@@ -4096,6 +4096,12 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   const typing = event.target && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA" || event.target.tagName === "SELECT" || event.target.isContentEditable);
+  if (!typing && !state.busy && !event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "m" && state.view === "cast" && window.meshCamera && meshCamera.poseMode && !(meshCamera.large)) {
+    event.preventDefault();
+    const act = actions["mesh-mirror"];
+    if (act) Promise.resolve(act()).catch((error) => toast(error.message || String(error)));
+    return;
+  }
   if (!typing && !state.busy && !event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "r" && !(window.meshCamera && meshCamera.large)) {
     event.preventDefault();
     const act = actions["open-mood"];
