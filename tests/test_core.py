@@ -2498,6 +2498,19 @@ process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: O
         self.assertNotEqual(full_hash, cut_hash, "long sound effect matched its 24-character prefix")
         self.assertLess(full.stat().st_size, 300_000)
 
+    def test_outline_toggle_starts_off_and_is_in_the_viewer(self) -> None:
+        from pathlib import Path
+
+        app = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
+        view = (Path(__file__).resolve().parents[1] / "ui" / "view3d.js").read_text(encoding="utf-8")
+        self.assertIn('data-act="mesh-outline"', app)
+        self.assertIn('"mesh-outline"', app)
+        self.assertIn("outline: false", view)
+        self.assertIn("drawOutlineGl", view)
+        self.assertIn("paintCanvasOutline", view)
+        self.assertIn("uOutline", view)
+        self.assertIn("gl.FRONT", view)
+
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
 
