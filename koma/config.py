@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 import os
 
+from koma.localdraw import LocalDrawError, loopback_url
 from koma.paths import config_file
+
+_DRAW_BACKENDS = {"auto", "xai", "local", "lines"}
 
 DEFAULTS = {
     "api_key": "",
@@ -15,6 +18,8 @@ DEFAULTS = {
     "meshy_key": "",
     "tripo_key": "",
     "mesh_command": "",
+    "draw_backend": "auto",
+    "local_draw_url": "",
 }
 
 _SECRET_KEYS = ("api_key", "meshy_key", "tripo_key")
@@ -48,6 +53,9 @@ def load_config() -> dict:
         data["resolution"] = "1k"
     if data["mesh_provider"] not in {"local", "meshy", "tripo"}:
         data["mesh_provider"] = "local"
+    if data["draw_backend"] not in _DRAW_BACKENDS:
+        data["draw_backend"] = "auto"
+    data["local_draw_url"] = _clean_draw_url(data.get("local_draw_url") or "")
     return data
 
 
@@ -70,10 +78,26 @@ def save_config(updates: dict) -> dict:
         current["mesh_provider"] = updates["mesh_provider"]
     if "mesh_command" in updates:
         current["mesh_command"] = str(updates["mesh_command"]).strip()[:500]
+    if "draw_backend" in updates and str(updates["draw_backend"]) in _DRAW_BACKENDS:
+        current["draw_backend"] = updates["draw_backend"]
+    if "local_draw_url" in updates:
+        current["local_draw_url"] = _clean_draw_url(updates.get("local_draw_url") or "", strict=True)
     path = config_file()
     path.write_text(json.dumps({key: current[key] for key in DEFAULTS}, indent=2), encoding="utf-8")
     os.chmod(path, 0o600)
     return load_config()
+
+
+def _clean_draw_url(value: str, strict: bool = False) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return loopback_url(text)
+    except LocalDrawError:
+        if strict:
+            raise
+        return ""
 
 
 def _stored_value(key: str) -> str:
@@ -111,4 +135,6 @@ def public_settings(data: dict | None = None) -> dict:
         "tripoHint": f"…{tripo[-4:]}" if len(tripo) >= 4 else "",
         "meshCommand": data.get("mesh_command") or "",
         "localReady": command_available(data),
+        "drawBackend": data.get("draw_backend") if data.get("draw_backend") in _DRAW_BACKENDS else "auto",
+        "localDrawUrl": _clean_draw_url(data.get("local_draw_url") or ""),
     }

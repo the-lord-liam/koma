@@ -2916,6 +2916,176 @@ process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: O
         self.assertIn("AI text bubbles", app)
         self.assertIn("panel notes", app)
 
+    def test_draw_backend_stays_on_this_machine(self):
+        import base64
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        from koma.config import load_config, save_config
+        from koma.localdraw import LocalDrawError, img2img, loopback_url, request_for
+        from koma.paths import config_file
+
+        def png(color):
+            image = Image.new("RGB", (24, 32), color)
+            buffer = io.BytesIO()
+            image.save(buffer, format="PNG")
+            return buffer.getvalue()
+
+        sketch = png((255, 255, 255))
+        encoded = base64.b64encode(sketch).decode("ascii")
+        calls = []
+
+        def transport(url, payload, timeout):
+            calls.append((url, payload))
+            body = json.dumps({"images": [base64.b64encode(png((20, 180, 40))).decode("ascii")]})
+            return body.encode("utf-8"), "application/json"
+
+        for bad in (
+            "",
+            "file:///sketch.png",
+            "http://1.1.1.1/draw",
+            "http://10.1.2.3/draw",
+            "http://192.168.0.5/img",
+            "http://x:y@127.0.0.1/draw",
+            "http://127.0.0.1\n@1.1.1.1/draw",
+        ):
+            with self.assertRaises(LocalDrawError):
+                img2img(bad, sketch, "panel", transport=transport)
+        self.assertEqual(calls, [])
+        self.assertEqual(loopback_url("http://127.0.0.1:7860/sdapi/v1/img2img"), "http://127.0.0.1:7860/sdapi/v1/img2img")
+        self.assertEqual(loopback_url("http://[::1]:8188/prompt"), "http://[::1]:8188/prompt")
+        loopback_url("http://localhost:9/draw")
+
+        target, headers, body = request_for("http://127.0.0.1:7860/sdapi/v1/img2img", sketch, "a quiet pier", 48, 64)
+        self.assertEqual(target, "http://127.0.0.1:7860/sdapi/v1/img2img")
+        self.assertEqual(set(headers), {"Content-Type", "Accept"})
+        parsed = json.loads(body)
+        self.assertEqual(
+            set(parsed),
+            {"init_images", "image", "prompt", "denoising_strength", "steps", "width", "height"},
+        )
+        self.assertEqual(parsed["image"], parsed["init_images"][0])
+        self.assertNotIn(b"analytics", body)
+        self.assertNotIn(b"telemetry", body)
+
+        class RedirectAway(BaseHTTPRequestHandler):
+            def do_POST(self):
+                self.send_response(302)
+                self.send_header("Location", "http://1.1.1.1/collect")
+                self.end_headers()
+
+            def log_message(self, fmt, *args):
+                return
+
+        server = HTTPServer(("127.0.0.1", 0), RedirectAway)
+        port = server.server_address[1]
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            with self.assertRaises(LocalDrawError):
+                img2img(f"http://127.0.0.1:{port}/img2img", sketch, "panel", timeout=2)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+        saved_key = os.environ.pop("XAI_API_KEY", None)
+        try:
+            path = config_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(
+                json.dumps({"draw_backend": "cloud", "local_draw_url": "http://1.1.1.1/x"}),
+                encoding="utf-8",
+            )
+            loaded = load_config()
+            self.assertEqual(loaded["draw_backend"], "auto")
+            self.assertEqual(loaded["local_draw_url"], "")
+
+            fresh = self.studio.bootstrap({})["settings"]
+            self.assertEqual(fresh["drawBackend"], "auto")
+            self.assertEqual(fresh["localDrawUrl"], "")
+            page, panel_id = self._fresh_panel("Backend")
+            self.studio._local_transport = transport
+            local = self.studio.panel_draw_live({"id": panel_id, "png": encoded})
+            self.assertEqual(local["source"], "lines")
+            self.assertEqual(calls, [])
+            self.assertEqual(self.store.list_versions(panel_id), [])
+
+            save_config({"draw_backend": "local", "local_draw_url": "http://127.0.0.1:7860/sdapi/v1/img2img"})
+            drawn = self.studio.panel_draw_live({"id": panel_id, "png": encoded})
+            self.assertEqual(drawn["source"], "local")
+            self.assertEqual(len(calls), 1)
+            self.assertEqual(calls[0][0], "http://127.0.0.1:7860/sdapi/v1/img2img")
+            self.assertEqual(self.store.list_versions(panel_id), [])
+            with Image.open(io.BytesIO(base64.b64decode(drawn["png"]))) as opened:
+                self.assertEqual(opened.getpixel((0, 0)), (20, 180, 40))
+
+            def refuse_imagine(*args, **kwargs):
+                raise AssertionError("imagine")
+
+            self.studio.client.imagine = refuse_imagine
+            forced = self.studio.panel_draw_live({"id": panel_id, "png": encoded})
+            self.assertEqual(forced["source"], "local")
+
+            save_config({"api_key": "test-key", "draw_backend": "auto"})
+            self.studio.client.imagine = FakeClient().imagine
+            chosen = self.studio.panel_draw_live({"id": panel_id, "png": encoded})
+            self.assertEqual(chosen["source"], "ai")
+            self.assertEqual(len(calls), 2)
+
+            save_config({"draw_backend": "lines"})
+            lines = self.studio.panel_draw_live({"id": panel_id, "png": encoded})
+            self.assertEqual(lines["source"], "lines")
+            self.assertEqual(len(calls), 2)
+
+            save_config({"draw_backend": "xai", "api_key": ""})
+            skipped = self.studio.panel_draw_live({"id": panel_id, "png": encoded})
+            self.assertEqual(skipped["source"], "lines")
+            self.assertEqual(len(calls), 2)
+
+            with self.assertRaises(LocalDrawError):
+                self.studio.settings_save({"localDrawUrl": "http://1.1.1.1/draw"})
+            kept = self.studio.bootstrap({})["settings"]
+            self.assertEqual(kept["localDrawUrl"], "http://127.0.0.1:7860/sdapi/v1/img2img")
+            self.assertNotIn("test-key", json.dumps(kept))
+
+            stored = self.studio.panel_draw_commit({"id": panel_id, "png": drawn["png"]})
+            self.assertIn("Draw", [item["note"] for item in self.store.list_versions(panel_id)])
+            with Image.open(self.store.get_panel(panel_id)["image_path"]) as opened:
+                self.assertEqual(opened.getpixel((0, 0)), (20, 180, 40))
+            self.studio.page_undo({"pageId": page["id"]})
+            self.assertFalse(self.store.get_panel(panel_id).get("image_path"))
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(stored["tree"]["project"]["id"])
+        finally:
+            if saved_key is not None:
+                os.environ["XAI_API_KEY"] = saved_key
+
+    def test_readme_covers_draw_and_the_page_tools(self):
+        root = Path(__file__).resolve().parents[1]
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        app = (root / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn(
+            "Koma is also a concept: an idea of what a free, local, AI-powered manga and illustration studio could be.",
+            readme,
+        )
+        self.assertIn("free and open source", readme)
+        self.assertIn("AI-powered", readme)
+        self.assertIn('href="https://x.com/the_lord_liam"', readme)
+        self.assertIn("docs/x-icon.png", readme)
+        self.assertIn("Feel free to take the idea", readme)
+        self.assertIn("black line art", readme)
+        self.assertIn("full-window", readme)
+        self.assertIn("Lasso", readme)
+        self.assertIn("Select", readme)
+        self.assertIn("AI text bubbles", readme)
+        self.assertIn("telemetry", readme)
+        self.assertIn('id="draw-full"', app)
+        self.assertIn("Tab or Esc saves this picture", app)
+        self.assertIn('rpc("panel.draw_commit"', app)
+        self.assertIn("localDrawUrl", app)
+        self.assertIn("drawBackend", app)
+        self.assertIn("320", app)
+
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
 
