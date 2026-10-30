@@ -18,6 +18,7 @@ from PIL import Image
 
 from koma import prompts
 from koma.ai import AIError, Client
+from koma.coloring import color_offline, keep_lines, lines_on_white
 from koma.compose import render_page
 from koma.config import load_config, public_settings, save_config
 from koma.formats import FormatError, catalog as format_catalog, project_pixels, resolve_format
@@ -25,6 +26,7 @@ from koma.ink import blur_region, clean_sketch, load_png, marks_of, mask_from_ma
 from koma.localdraw import LocalDrawError, img2img, loopback_url
 from koma.layouts import LAYOUTS, LayoutError, assist_divide, place, reflow_after_delete, to_stored_line
 from koma.lines import extract_lines, strength_of
+from koma.tones import apply_tone, tone_kind
 from koma.media import media_url, save_image, unlink
 from koma.mesh import (
     NOT_INSTALLED,
@@ -2841,6 +2843,125 @@ class Studio:
         self.store.touch(project["id"])
         return self._pack(project["id"])
 
+    def panel_tone(self, params: dict) -> dict:
+        """Lay screentone on this machine. A path limits it to that area."""
+        panel, page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
+        current = str(panel.get("image_path") or "")
+        if not current or not Path(current).is_file():
+            raise ValueError("Draw or import a picture before adding tone.")
+        picture = _load_picture(Path(current))
+        kind = tone_kind(params.get("kind"))
+        density = strength_of(params.get("density"), 0.45)
+        size = strength_of(params.get("size"), 0.35)
+        marks = marks_of(params.get("path"))
+        mode = "circle" if params.get("mode") == "circle" else "select"
+        mask = None
+        toned = None
+        try:
+            if marks:
+                need = 2 if mode == "circle" else 3
+                if len(marks) < need:
+                    raise ValueError("Circle a part of the panel first.")
+                mask = mask_from_marks(picture.size, marks, mode)
+                if mask.getbbox() is None:
+                    raise ValueError("Circle a part of the panel first.")
+            toned = apply_tone(picture, kind, density, size, mask)
+            saved = str(save_image(png_bytes(toned)))
+        finally:
+            picture.close()
+            if mask is not None:
+                mask.close()
+            if toned is not None:
+                toned.close()
+        self._remember(page["id"])
+        self.store.add_version(panel["id"], saved, "", "Tone")
+        self.store.touch(project["id"])
+        return self._pack(project["id"], source="lines")
+
+    def panel_color(self, params: dict) -> dict:
+        """Color line art. xAI, a local server, or a wash on this machine. Ink stays."""
+        panel, page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
+        note = _clip(params.get("prompt"), 400).strip()
+        if not note:
+            raise ValueError("Write a short color note.")
+        current = str(panel.get("image_path") or "")
+        if not current or not Path(current).is_file():
+            raise ValueError("Draw or extract lines before coloring.")
+        picture = _load_picture(Path(current))
+        flat = None
+        lines = None
+        colored = None
+        source = "lines"
+        try:
+            flat, lines = lines_on_white(picture)
+            mode, choice = self._draw_plan()
+            if choice == "ai":
+                try:
+                    colored = self._color_with_ai(flat, lines, note)
+                    source = "ai"
+                except AIError as error:
+                    if "API key" not in str(error):
+                        raise
+                    choice = "local" if mode == "auto" and self._local_draw_url() else "lines"
+            if colored is None and choice == "local":
+                try:
+                    colored = self._color_with_local(flat, lines, note)
+                    source = "local"
+                except LocalDrawError:
+                    if mode == "local":
+                        raise
+            if colored is None:
+                colored = color_offline(picture, note)
+                source = "lines"
+            saved = str(save_image(png_bytes(colored)))
+        finally:
+            picture.close()
+            if flat is not None:
+                flat.close()
+            if lines is not None:
+                lines.close()
+            if colored is not None:
+                colored.close()
+        self._remember(page["id"])
+        self.store.add_version(panel["id"], saved, note, "Color")
+        self.store.touch(project["id"])
+        return self._pack(project["id"], source=source)
+
+    def _color_with_ai(self, flat: Image.Image, lines: Image.Image, note: str) -> Image.Image:
+        path = str(save_image(png_bytes(flat)))
+        saved = ""
+        try:
+            prompt = (
+                "<IMAGE_0> is black line art. Color it. "
+                + note
+                + " Keep every ink line where it is. Flat color behind the lines. No text."
+            )
+            saved = self._imagine(prompt, "2:3", [path])
+            with Image.open(saved) as incoming:
+                incoming.load()
+                return keep_lines(incoming, lines)
+        finally:
+            if path:
+                unlink(path)
+            if saved and saved != path:
+                unlink(saved)
+
+    def _color_with_local(self, flat: Image.Image, lines: Image.Image, note: str) -> Image.Image:
+        url = self._local_draw_url()
+        if not url:
+            raise LocalDrawError("The local draw address has to stay on this machine.")
+        data = img2img(
+            url,
+            png_bytes(flat),
+            note + " Keep the ink lines. Flat color behind them.",
+            width=flat.size[0],
+            height=flat.size[1],
+            transport=getattr(self, "_local_transport", None),
+        )
+        with Image.open(io.BytesIO(data)) as incoming:
+            incoming.load()
+            return keep_lines(incoming, lines)
+
     def panel_delete_ref(self, params: dict) -> dict:
         ref = self.store.get_ref(params["refId"])
         if ref["owner_kind"] == "panel":
@@ -3775,6 +3896,8 @@ ROUTES = {
     "panel.draw_commit": Studio.panel_draw_commit,
     "panel.lasso": Studio.panel_lasso,
     "panel.lines": Studio.panel_lines,
+    "panel.tone": Studio.panel_tone,
+    "panel.color": Studio.panel_color,
     "panel.delete_ref": Studio.panel_delete_ref,
     "volume.create": Studio.volume_create,
     "volume.update": Studio.volume_update,

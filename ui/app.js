@@ -35,6 +35,13 @@ const state = {
   setupDpi: "300",
   menuOpen: false,
   spreadAt: 0,
+  readRtl: null,
+  readMotion: "",
+  storyboard: false,
+  toneKind: "dot",
+  toneDensity: 45,
+  toneSize: 35,
+  colorNote: "",
   windowTitle: "",
   storyFocus: "title",
   storyFocusId: "",
@@ -191,7 +198,7 @@ function placed(layoutId, reading) {
   return slots.map((slot) => ({ ...slot, x: 1 - slot.x - slot.w }));
 }
 
-function pageThumb(page, reading) {
+function pageThumb(page, reading, large) {
   const slots = page.slots && page.slots.length ? page.slots : placed(page.layout || "classic", reading);
   const images = {};
   for (const panel of page.panels || []) images[panel.slot] = panel.imageUrl;
@@ -201,7 +208,7 @@ function pageThumb(page, reading) {
     const image = images[index] ? `background-image:url('${esc(images[index])}')` : "";
     return `<span class="mini-slot" style="${style}${image}"></span>`;
   }).join("");
-  return `<span class="page-thumb" aria-hidden="true">${faces}</span>`;
+  return `<span class="page-thumb${large ? " large" : ""}" aria-hidden="true">${faces}</span>`;
 }
 
 function panelHasWork(panel) {
@@ -265,6 +272,7 @@ function render() {
   mountBot();
   requestAnimationFrame(() => {
     paintDivide();
+    paintLasso();
     restoreSketch();
     restoreDraw();
     if (window.mountMeshViewers) mountMeshViewers();
@@ -291,12 +299,13 @@ function paintHelp() {
         <li><kbd>?</kbd> Show or hide this list</li>
         <li><kbd>R</kbd> Open the reference board for this book</li>
         <li><kbd>1</kbd>–<kbd>8</kbd> Lasso, Select, Text, Sketch, Effects, Imagine, Lines, Draw</li>
+        <li><kbd>9</kbd> Tone <kbd>0</kbd> Color</li>
         <li><kbd>Tab</kbd> Full-window Draw. Tab or Esc saves and returns</li>
         <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> Undo a page edit</li>
         <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> Redo</li>
         <li><kbd>[</kbd> <kbd>]</kbd> Move the selected panel earlier or later</li>
         <li><kbd>Delete</kbd> Delete the selected panel</li>
-        <li><kbd>←</kbd> <kbd>→</kbd> Turn the page in Read</li>
+        <li><kbd>←</kbd> <kbd>→</kbd> Turn the page in Read. They follow the side you would tap</li>
         <li>3D model: drag orbits, Shift-drag pans, Alt-drag rolls, scroll zooms. Pose rotates a rigged model. <kbd>M</kbd> copies the left arm and leg onto the right. Grid, background, and Save this angle sit under the model</li>
       </ul>
       <p class="meta">Drag a page in the list, or a panel on the sheet, to reorder it. The Earlier and Later buttons do the same. The last 20 edits on a page stay on disk.</p>
@@ -410,7 +419,8 @@ function desk(rail, stage, side, sideClass) {
   const extra = side
     ? `<aside class="rail ${sideClass || "rail-side"}" data-scroll="side-${esc(state.view)}">${side}</aside>`
     : "";
-  return `<div class="desk"><aside class="rail" data-scroll="rail-${esc(state.view)}">${rail}</aside><div class="desk-stage">${stage}</div>${extra}</div>`;
+  const reading = state.view === "read" ? " desk-read" : "";
+  return `<div class="desk${reading}"><aside class="rail" data-scroll="rail-${esc(state.view)}">${rail}</aside><div class="desk-stage">${stage}</div>${extra}</div>`;
 }
 
 function currentBoard() {
@@ -1650,6 +1660,7 @@ function renderPages() {
         <button type="button" class="ghost" data-act="undo-page" title="Undo (Ctrl+Z)">Undo</button>
         <button type="button" class="ghost" data-act="redo-page" title="Redo (Ctrl+Shift+Z)">Redo</button>
       </div>
+      <button type="button" class="chip ${state.storyboard ? "on" : ""}" data-act="toggle-storyboard" ${volChapters.length ? "" : "disabled"}>Storyboard</button>
       <p class="rail-kicker">Panel maker</p>
       <div class="row">
         <button type="button" class="ghost" data-act="suggest-layout" ${state.busy || !row ? "disabled" : ""}>Suggest</button>
@@ -1660,10 +1671,23 @@ function renderPages() {
       ${pageFile}
     </div>
   `;
-  const stage = row
-    ? pageStage(row, project)
-    : `<div class="stage"><div class="empty">Add a chapter and a page when you are ready to draw. Press ? for the page shortcuts.</div></div>`;
+  const chapter = volChapters.find((item) => item.id === state.navChapterId) || null;
+  const stage = state.storyboard && chapter
+    ? storyboardStage(chapter, project)
+    : row
+      ? pageStage(row, project)
+      : `<div class="stage"><div class="empty">Add a chapter and a page when you are ready to draw. Press ? for the page shortcuts.</div></div>`;
   return desk(rail, stage, toolDock(row ? row.page : null, row ? currentPanel() : null), "rail-tools") + drawFullLayer();
+}
+
+function storyboardStage(chapter, project) {
+  const cards = (chapter.pages || []).map((page) => `
+    <button type="button" class="board-card ${page.id === state.pageId ? "on" : ""}" draggable="true" data-drag="page" data-chapter="${esc(chapter.id)}" data-act="select-page" data-id="${esc(page.id)}">
+      ${pageThumb(page, project.reading, true)}
+      <span>Page ${page.idx + 1}</span>
+    </button>
+  `).join("");
+  return `<div class="stage"><div class="storyboard" data-storyboard="1">${cards || `<p class="meta">This chapter has no pages yet.</p>`}</div></div>`;
 }
 
 function pageRatio(project) {
@@ -1745,7 +1769,7 @@ function pageOverlays(panel, slots) {
   if (state.pageTool === "sketch") {
     return `<canvas class="sketch-layer gesture" data-pen="sketch" style="${style}"></canvas>`;
   }
-  if (state.pageTool === "lasso") {
+  if (state.pageTool === "lasso" || state.pageTool === "tone") {
     return `<svg class="lasso-layer gesture" data-pen="lasso" viewBox="0 0 1 1" preserveAspectRatio="none" style="${style}"></svg>`;
   }
   return "";
@@ -1772,6 +1796,8 @@ const PAGE_TOOLS = [
   ["imagine", "Imagine"],
   ["lines", "Lines"],
   ["draw", "Draw"],
+  ["tone", "Tone"],
+  ["color", "Color"],
 ];
 
 const VIBES = ["Screentone", "Speed lines", "Rain", "Night", "Dust", "Spark", "Quiet", "Harsh light"];
@@ -1801,6 +1827,8 @@ function toolProps(panel) {
   if (state.pageTool === "vfx") return vibeProps(panel);
   if (state.pageTool === "lines") return linesProps(panel);
   if (state.pageTool === "draw") return drawProps(panel);
+  if (state.pageTool === "tone") return toneProps(panel);
+  if (state.pageTool === "color") return colorProps(panel);
   return lassoProps(panel);
 }
 
@@ -2029,6 +2057,49 @@ function linesProps(panel) {
   `;
 }
 
+function toneReadout() {
+  const density = Number.isFinite(state.toneDensity) ? state.toneDensity : 45;
+  const size = Number.isFinite(state.toneSize) ? state.toneSize : 35;
+  return `Density ${density}. Size ${size}.`;
+}
+
+function toneProps(panel) {
+  const density = Number.isFinite(state.toneDensity) ? state.toneDensity : 45;
+  const size = Number.isFinite(state.toneSize) ? state.toneSize : 35;
+  const kind = state.toneKind || "dot";
+  const marks = state.lassoPath || [];
+  const circled = state.lassoMode === "circle" ? marks.length >= 2 : marks.length >= 3;
+  const kinds = [["dot", "Dots"], ["line", "Lines"], ["gradient", "Gradient"]];
+  return `
+    <p class="rail-kicker">Tone</p>
+    <p class="meta">Dot, line, or gradient screentone. It stays on this machine. Circle the panel for one area, or tone the whole panel. Black ink stays black.</p>
+    <div class="chips">
+      ${kinds.map(([id, label]) => `<button type="button" class="chip${kind === id ? " on" : ""}" data-act="tone-kind" data-value="${id}">${label}</button>`).join("")}
+    </div>
+    <label class="field">Density
+      <input type="range" min="1" max="100" step="1" data-tone-density value="${density}" aria-label="Tone density">
+    </label>
+    <label class="field">Size
+      <input type="range" min="1" max="100" step="1" data-tone-size value="${size}" aria-label="Tone size">
+    </label>
+    <p class="meta" data-tone-readout>${toneReadout()}</p>
+    <button type="button" class="rail-go" data-act="apply-tone" data-id="${esc(panel.id)}" ${state.busy || !panel.imageUrl ? "disabled" : ""}>Tone this panel</button>
+    <button type="button" class="ghost" data-act="apply-tone" data-id="${esc(panel.id)}" data-area="selection" ${state.busy || !panel.imageUrl || !circled ? "disabled" : ""}>Tone the circled area</button>
+  `;
+}
+
+function colorProps(panel) {
+  return `
+    <p class="rail-kicker">Color</p>
+    <p class="meta">Color this panel, or line art you already extracted. A short note is enough. The ink stays.</p>
+    <label class="field">Color note
+      <textarea id="color-note" placeholder="Blue coat, warm skin, night street">${esc(state.colorNote || "")}</textarea>
+    </label>
+    <p class="meta">Same path as Draw: xAI when a key is saved, a local server when that is the choice, or a flat wash on this machine.</p>
+    <button type="button" class="rail-go" data-act="apply-color" data-id="${esc(panel.id)}" ${state.busy || !panel.imageUrl ? "disabled" : ""}>Color this panel</button>
+  `;
+}
+
 function vibeProps(panel) {
   const chipsHtml = VIBES.map((vibe) => `
     <button type="button" class="chip${panel.vibe === vibe ? " on" : ""}" data-act="set-vibe" data-id="${esc(panel.id)}" data-value="${esc(vibe)}">${esc(vibe)}</button>
@@ -2081,12 +2152,36 @@ function imagineProps(page, panel) {
 }
 
 
+function readerRtl() {
+  if (state.readRtl === true || state.readRtl === false) return state.readRtl;
+  const project = state.tree && state.tree.project;
+  return !project || project.reading !== "ltr";
+}
+
+function readKeyDir(key, rtl) {
+  if (key === "ArrowLeft") return rtl ? 1 : -1;
+  if (key === "ArrowRight") return rtl ? -1 : 1;
+  return 0;
+}
+
+function readSideDir(side, rtl) {
+  return (side === "left") === Boolean(rtl) ? 1 : -1;
+}
+
+function pageCounter(pages, start) {
+  if (!pages.length) return "0 / 0";
+  const first = start + 1;
+  const last = Math.min(pages.length, start + 2);
+  const span = first === last ? String(first) : `${first}–${last}`;
+  return `${span} / ${pages.length}`;
+}
+
 function renderRead() {
   const list = chapters();
   if (!list.length) {
     return desk(
       `<p class="rail-kicker">Read</p><p class="meta">Add a chapter, then read it here.</p>`,
-      `<div class="stage"><div class="empty">Add a chapter, then the finished pages show up here. Arrow keys turn the page once there is one to turn.</div></div>`,
+      `<div class="stage read-stage"><div class="empty">Add a chapter, then the finished pages show up here. Arrow keys turn the page once there is one to turn.</div></div>`,
     );
   }
   const selected = list.find((chapter) => chapter.id === state.readChapterId) || list[0];
@@ -2102,32 +2197,46 @@ function renderRead() {
     (sum, page) => sum + page.panels.filter((panel) => !panel.imageUrl).length,
     0,
   );
-  const first = pages.length ? state.spreadAt + 1 : 0;
-  const last = Math.min(pages.length, state.spreadAt + 2);
-  const range = !pages.length ? "No pages yet" : (first === last ? `Page ${first}` : `Pages ${first}–${last}`);
-  const reading = state.tree.project.reading === "rtl"
+  const rtl = readerRtl();
+  const motion = state.readMotion || "";
+  state.readMotion = "";
+  const counter = pageCounter(pages, state.spreadAt);
+  const reading = rtl
     ? "Right to left. The earlier page sits on the right."
-    : "Left to right.";
+    : "Left to right. The earlier page sits on the left.";
+  const visible = [pages[state.spreadAt], pages[state.spreadAt + 1]].filter(Boolean);
+  const edits = visible.map((page) => `
+    <button type="button" class="ghost" data-act="open-page" data-id="${esc(page.id)}">Edit page ${page.idx + 1}</button>
+  `).join("");
+  const leftLabel = rtl ? "Next page" : "Previous page";
+  const rightLabel = rtl ? "Previous page" : "Next page";
   const rail = `
     <p class="rail-kicker">Read</p>
     <label class="field">Chapter
       <select data-act="pick-chapter">${options}</select>
     </label>
-    <p class="meta">${esc(range)}</p>
-    <p class="meta">${esc(reading)} Arrow keys turn the page.</p>
+    <p class="meta" data-page-counter>${esc(counter)}</p>
+    <button type="button" class="chip ${rtl ? "on" : ""}" data-act="read-flip">${rtl ? "Right to left" : "Left to right"}</button>
+    <p class="meta">${esc(reading)} The left side is ${rtl ? "next" : "previous"}. Arrow keys match. A right-click also goes to the next page.</p>
     <p class="meta">${empty ? `${empty} panels still empty` : "Every panel has a drawing"}</p>
     <div class="row">
       <button type="button" class="ghost" data-act="spread-step" data-dir="-1" ${state.spreadAt <= 0 ? "disabled" : ""}>Earlier</button>
       <button type="button" class="ghost" data-act="spread-step" data-dir="1" ${state.spreadAt >= maxStart ? "disabled" : ""}>Later</button>
     </div>
+    <div class="row">${edits}</div>
     <button type="button" class="ghost" data-act="draw-empty" data-scope="chapter" data-id="${esc(selected.id)}" ${state.busy ? "disabled" : ""}>Draw empty panels</button>
     <button type="button" class="ghost" data-act="reload-read" ${state.busy ? "disabled" : ""}>Refresh</button>
     <button type="button" class="ghost" data-act="export-chapter" data-id="${esc(selected.id)}" data-format="pdf">Chapter PDF</button>
     <button type="button" class="ghost" data-act="export-chapter" data-id="${esc(selected.id)}" data-format="cbz">Chapter CBZ</button>
   `;
   const stage = pages.length
-    ? `<div class="stage"><div class="spread">${spreadLeaves(pages, state.spreadAt, state.tree.project.reading).map((page) => readLeaf(page)).join("")}</div></div>`
-    : `<div class="stage"><div class="empty">This chapter has no pages yet.</div></div>`;
+    ? `<div class="stage read-stage ${rtl ? "rtl" : "ltr"}">
+        <div class="spread ${esc(motion)}">${spreadLeaves(pages, state.spreadAt, rtl ? "rtl" : "ltr").map((page) => readLeaf(page)).join("")}</div>
+        <button type="button" class="read-hit read-hit-left" data-act="read-turn" data-side="left" aria-label="${esc(leftLabel)}"></button>
+        <button type="button" class="read-hit read-hit-right" data-act="read-turn" data-side="right" aria-label="${esc(rightLabel)}"></button>
+        <p class="page-counter" data-page-counter>${esc(counter)}</p>
+      </div>`
+    : `<div class="stage read-stage"><div class="empty">This chapter has no pages yet.</div></div>`;
   return desk(rail, stage);
 }
 
@@ -2144,11 +2253,11 @@ function readLeaf(page) {
   const ratio = pageRatio(state.tree.project);
   const label = `Page ${page.idx + 1}`;
   if (!sheet) {
-    return `<button type="button" class="leaf" style="${ratio}" data-act="open-page" data-id="${esc(page.id)}"><span>${label}</span></button>`;
+    return `<div class="leaf" style="${ratio}"><span>${label}</span></div>`;
   }
-  return `<button type="button" class="leaf" style="${ratio}" data-act="open-page" data-id="${esc(page.id)}">
+  return `<div class="leaf" style="${ratio}">
     <img src="${esc(sheet.url)}?t=${state.sheetStamp}" alt="${esc(label)}">
-  </button>`;
+  </div>`;
 }
 
 async function loadSheets() {
@@ -2495,7 +2604,22 @@ const actions = {
     const count = chapter ? chapter.pages.length : 0;
     const maxStart = count <= 1 ? 0 : (count % 2 === 0 ? count - 2 : count - 1);
     const dir = Number(button.dataset.dir) || 1;
+    const before = state.spreadAt;
     state.spreadAt = Math.max(0, Math.min(maxStart, state.spreadAt + dir * 2));
+    if (state.spreadAt !== before) state.readMotion = dir > 0 ? "turn-next" : "turn-prev";
+    render();
+  },
+  "read-turn"(button) {
+    const dir = readSideDir(button.dataset.side, readerRtl());
+    const act = actions["spread-step"];
+    if (act) act({ dataset: { dir: String(dir) } });
+  },
+  "read-flip"() {
+    state.readRtl = !readerRtl();
+    render();
+  },
+  "toggle-storyboard"() {
+    state.storyboard = !state.storyboard;
     render();
   },
   "open-illust"() {
@@ -2854,6 +2978,7 @@ const actions = {
   "select-page"(button) {
     state.pageId = button.dataset.id;
     state.panelId = null;
+    if (button.closest && button.closest("[data-storyboard]")) state.storyboard = false;
     const found = allPages().find((item) => item.page.id === state.pageId);
     if (found) {
       state.navChapterId = found.chapter.id;
@@ -3487,6 +3612,40 @@ const actions = {
     return run("Extracting lines…", async () => {
       absorb(await rpc("panel.lines", params));
       toast("Line art is on the panel.", "ok");
+    });
+  },
+  "tone-kind"(button) {
+    const kind = button.dataset.value;
+    state.toneKind = kind === "line" || kind === "gradient" ? kind : "dot";
+    render();
+  },
+  "apply-tone"(button) {
+    const id = button.dataset.id;
+    if (!id) return;
+    const params = {
+      id,
+      kind: state.toneKind || "dot",
+      density: Math.min(1, Math.max(0, (Number(state.toneDensity) || 45) / 100)),
+      size: Math.min(1, Math.max(0, (Number(state.toneSize) || 35) / 100)),
+    };
+    if (button.dataset.area === "selection") {
+      params.path = (state.lassoPath || []).map((item) => ({ x: item.x, y: item.y }));
+      params.mode = state.lassoMode === "circle" ? "circle" : "select";
+    }
+    return run("Adding tone…", async () => {
+      absorb(await rpc("panel.tone", params));
+      toast("Tone is on the panel.", "ok");
+    });
+  },
+  "apply-color"(button) {
+    const id = button.dataset.id;
+    if (!id) return;
+    const prompt = (state.colorNote || "").trim();
+    return run("Coloring…", async () => {
+      const result = await rpc("panel.color", { id, prompt });
+      absorb(result);
+      const where = result.source === "ai" ? "xAI" : (result.source === "local" ? "the local server" : "this machine");
+      toast(`Colored with ${where}.`, "ok");
     });
   },
   async "import-ref"(button) {
@@ -4235,7 +4394,10 @@ function onPenUp(event) {
     clearTimeout(drawTimer);
     sendDrawPreview();
   }
-  if (pen.kind === "lasso") sendLasso();
+  if (pen.kind === "lasso") {
+    if (state.pageTool === "tone") paintLasso();
+    else sendLasso();
+  }
   if (pen.kind === "el-move" || pen.kind === "el-resize") {
     const moved = !!pen.moved;
     const elements = readElements();
@@ -4406,7 +4568,7 @@ document.addEventListener("wheel", (event) => {
   if (event.ctrlKey) event.preventDefault();
 }, { passive: false });
 
-const dragState = { kind: "", id: "" };
+const dragState = { kind: "", id: "", suppressClick: false };
 
 function reorderIds(ids, fromId, toId) {
   const next = ids.slice();
@@ -4450,13 +4612,17 @@ document.addEventListener("drop", (event) => {
   document.querySelectorAll(".drag-over, .dragging").forEach((node) => node.classList.remove("drag-over", "dragging"));
   if (!el || el.dataset.drag !== dragState.kind || !dragState.id) return;
   event.preventDefault();
+  dragState.suppressClick = true;
   const fromId = dragState.id;
   const kind = dragState.kind;
   dragState.kind = "";
   dragState.id = "";
   if (kind === "page") {
     const chapterId = el.dataset.chapter;
-    const ids = [...document.querySelectorAll(`[data-drag="page"][data-chapter="${chapterId}"]`)].map((node) => node.dataset.id);
+    const ids = [];
+    document.querySelectorAll(`[data-drag="page"][data-chapter="${chapterId}"]`).forEach((node) => {
+      if (node.dataset.id && !ids.includes(node.dataset.id)) ids.push(node.dataset.id);
+    });
     const next = reorderIds(ids, fromId, el.dataset.id);
     if (!next) return;
     Promise.resolve(run("Moving…", async () => {
@@ -4488,6 +4654,10 @@ document.addEventListener("click", (event) => {
     state.menuOpen = false;
     if (!button || button.disabled) render();
   }
+  if (dragState.suppressClick) {
+    dragState.suppressClick = false;
+    if (button && button.dataset.act === "select-page") return;
+  }
   if (!button || button.disabled) return;
   const act = actions[button.dataset.act];
   if (!act) return;
@@ -4518,6 +4688,17 @@ document.addEventListener("input", (event) => {
     state.lineStrength = Number(el.value) || 1;
     const readout = document.querySelector("[data-line-readout]");
     if (readout) readout.textContent = `${state.lineStrength}. Lower keeps the darkest strokes. Higher keeps lighter edges too.`;
+    return;
+  }
+  if (el && el.dataset && ("toneDensity" in el.dataset || "toneSize" in el.dataset)) {
+    if ("toneDensity" in el.dataset) state.toneDensity = Number(el.value) || 1;
+    if ("toneSize" in el.dataset) state.toneSize = Number(el.value) || 1;
+    const readout = document.querySelector("[data-tone-readout]");
+    if (readout) readout.textContent = toneReadout();
+    return;
+  }
+  if (el && el.id === "color-note") {
+    state.colorNote = el.value;
     return;
   }
   if (el && el.id === "bot-draft") state.botDraft = el.value;
@@ -4562,6 +4743,14 @@ document.addEventListener("input", (event) => {
   if (!String(el.dataset.field || "").startsWith("setup")) return;
   state[el.dataset.field] = el.value;
   paintSetupSpec();
+});
+
+document.addEventListener("contextmenu", (event) => {
+  if (state.view !== "read" || state.busy) return;
+  if (!event.target.closest || !event.target.closest(".read-stage")) return;
+  event.preventDefault();
+  const act = actions["spread-step"];
+  if (act) act({ dataset: { dir: "1" } });
 });
 
 document.addEventListener("keydown", (event) => {
@@ -4616,8 +4805,9 @@ document.addEventListener("keydown", (event) => {
   }
   if (!typing && !state.busy && state.view === "read" && (event.key === "ArrowLeft" || event.key === "ArrowRight")) {
     event.preventDefault();
+    const dir = readKeyDir(event.key, readerRtl());
     const act = actions["spread-step"];
-    if (act) act({ dataset: { dir: event.key === "ArrowRight" ? "1" : "-1" } });
+    if (act && dir) act({ dataset: { dir: String(dir) } });
     return;
   }
   if (!typing && !state.busy && state.view === "pages" && (event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
@@ -4639,8 +4829,10 @@ document.addEventListener("keydown", (event) => {
       if (act) Promise.resolve(act({ dataset: { id: state.panelId, dir: event.key === "[" ? "-1" : "1" } })).catch((error) => toast(error.message || String(error)));
       return;
     }
-    const toolKeys = ["lasso", "select", "text", "sketch", "vfx", "imagine", "lines", "draw"];
-    const toolIndex = "12345678".indexOf(event.key);
+    const toolKeys = ["lasso", "select", "text", "sketch", "vfx", "imagine", "lines", "draw", "tone", "color"];
+    let toolIndex = "12345678".indexOf(event.key);
+    if (event.key === "9") toolIndex = 8;
+    if (event.key === "0") toolIndex = 9;
     if (toolIndex >= 0) {
       event.preventDefault();
       const act = actions["pick-tool"];

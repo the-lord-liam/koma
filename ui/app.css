@@ -1169,11 +1169,58 @@ body[data-studio="1"] .settings { background: var(--ink); }
 }
 .studio-art img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
+.desk-read .desk-stage { overflow: hidden; }
+.read-stage {
+  position: relative;
+  overflow: hidden;
+  width: 100%;
+  height: 100%;
+}
 .spread {
   display: flex;
   align-items: stretch;
   justify-content: center;
   filter: drop-shadow(0 18px 44px rgba(0, 0, 0, 0.55));
+}
+.spread.turn-next { animation: turn-next 240ms ease; }
+.spread.turn-prev { animation: turn-prev 240ms ease; }
+.read-stage.ltr .spread.turn-next { animation-name: turn-prev; }
+.read-stage.ltr .spread.turn-prev { animation-name: turn-next; }
+@keyframes turn-next {
+  from { opacity: 0.45; transform: translateX(-24px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes turn-prev {
+  from { opacity: 0.45; transform: translateX(24px); }
+  to { opacity: 1; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .spread.turn-next, .spread.turn-prev { animation: none; }
+}
+.read-hit {
+  position: absolute;
+  top: 0;
+  bottom: 36px;
+  width: 50%;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  z-index: 2;
+}
+.read-hit-left { left: 0; cursor: w-resize; }
+.read-hit-right { right: 0; cursor: e-resize; }
+.read-hit:hover { background: rgba(255, 255, 255, 0.04); }
+.page-counter {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 8px;
+  margin: 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+  z-index: 3;
+  pointer-events: none;
 }
 .leaf {
   width: min(38vw, calc((100vh - 160px) * var(--aw, 2) / var(--ah, 3)));
@@ -1319,6 +1366,31 @@ body[data-studio="1"] .settings { background: var(--ink); }
   overflow: hidden;
 }
 .page-thumb .mini-slot { border-width: 1px; }
+.page-thumb.large {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 2 / 3;
+}
+.storyboard {
+  width: min(880px, 100%);
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(108px, 1fr));
+  gap: 12px;
+  padding: 8px;
+}
+.board-card {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--muted);
+  padding: 8px;
+}
+.board-card.on { border-color: var(--line); color: var(--text); }
+.board-card.dragging { opacity: 0.45; }
 .rail-tree {
   display: flex;
   flex-direction: column;
