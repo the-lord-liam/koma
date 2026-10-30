@@ -2767,6 +2767,57 @@ process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: O
         self.assertIn('class="draw-pair"', app)
         self.assertIn('rpc("panel.draw_live"', app)
 
+    def test_lasso_redraws_the_marked_region(self):
+        from koma.config import save_config
+        from koma.media import save_image
+        from koma.service import ROUTES
+
+        self.assertIn("panel.lasso", ROUTES)
+        _page, panel_id = self._fresh_panel("Lasso")
+        art = Image.new("RGB", (48, 32), (255, 255, 255))
+        for y in range(32):
+            for x in range(24):
+                art.putpixel((x, y), (0, 0, 0))
+        buffer = io.BytesIO()
+        art.save(buffer, format="PNG")
+        self.store.add_version(panel_id, str(save_image(buffer.getvalue())), "", "Drawn")
+        marks = [
+            {"x": 0.55, "y": 0.0},
+            {"x": 1, "y": 0.0},
+            {"x": 1, "y": 1},
+            {"x": 0.55, "y": 1},
+        ]
+        saved = os.environ.pop("XAI_API_KEY", None)
+        calls = {"n": 0}
+        original = self.studio.client.imagine
+        try:
+            def imagine(*args, **kwargs):
+                calls["n"] += 1
+                return original(*args, **kwargs)
+
+            self.studio.client.imagine = imagine
+            with self.assertRaises(ValueError):
+                self.studio.panel_lasso({"id": panel_id, "path": [{"x": 0.2, "y": 0.2}], "mode": "select"})
+            local = self.studio.panel_lasso({"id": panel_id, "path": marks, "mode": "select"})
+            self.assertEqual(local["source"], "lines")
+            self.assertEqual(calls["n"], 0)
+            self.assertIn("Lasso", [item["note"] for item in self.store.list_versions(panel_id)])
+            with Image.open(self.store.get_panel(panel_id)["image_path"]) as opened:
+                self.assertEqual(opened.getpixel((2, 16)), (0, 0, 0))
+                self.assertLess(opened.getpixel((30, 16))[0], 250)
+            save_config({"api_key": "test-key"})
+            drawn = self.studio.panel_lasso({"id": panel_id, "path": marks, "mode": "select"})
+            self.assertEqual(drawn["source"], "ai")
+            self.assertEqual(calls["n"], 1)
+            with Image.open(self.store.get_panel(panel_id)["image_path"]) as opened:
+                self.assertEqual(opened.getpixel((2, 16)), (0, 0, 0))
+                self.assertEqual(opened.getpixel((40, 16)), (180, 30, 30))
+        finally:
+            if saved is not None:
+                os.environ["XAI_API_KEY"] = saved
+        app = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('rpc("panel.lasso"', app)
+
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
 
