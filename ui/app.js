@@ -1910,6 +1910,11 @@ function selectProps(panel) {
 
 function textProps(panel) {
   const vocab = state.vocab;
+  const suggested = (panel.elements || []).filter((item) => item.kind === "balloon").map((item) => `
+    <label class="field">Balloon
+      <textarea data-save="balloon" data-field="text" data-entity="${esc(item.id)}">${esc(item.text || "")}</textarea>
+    </label>
+  `).join("");
   return `
     <p class="rail-kicker">Text</p>
     <div class="chips">
@@ -1933,8 +1938,9 @@ function textProps(panel) {
     <label class="field">Sound effect
       <input type="text" data-save="panel" data-field="sfx" data-entity="${esc(panel.id)}" value="${esc(panel.sfx)}">
     </label>
+    ${suggested}
     <button type="button" class="rail-go" data-act="make-balloon" data-id="${esc(panel.id)}" ${state.busy ? "disabled" : ""}>AI text bubbles</button>
-    <p class="meta">Lettering stays on the page. It is not drawn into the art.</p>
+    <p class="meta">Suggests lines from the panel notes. With a key, the model writes them. Without one, a short template is used. The balloons stay editable. Lettering stays on the page. It is not drawn into the art.</p>
   `;
 }
 
@@ -3734,7 +3740,10 @@ const actions = {
   "make-balloon"() {
     if (!state.panelId) return;
     return run("Writing the balloon…", async () => {
-      absorb(await rpc("panel.letter", { id: state.panelId }));
+      const result = await rpc("panel.letter", { id: state.panelId });
+      absorb(result);
+      if (result && result.source === "ai") toast("Wrote the balloons.", "ok");
+      else toast("Filled the balloons from the notes.", "ok");
     });
   },
   "set-vibe"(button) {
