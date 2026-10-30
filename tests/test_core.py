@@ -2818,6 +2818,46 @@ process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: O
         app = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
         self.assertIn('rpc("panel.lasso"', app)
 
+    def _panel_row(self, packed, page_id):
+        page = next(item for item in packed["tree"]["chapters"][0]["pages"] if item["id"] == page_id)
+        return page["panels"][0]
+
+    def test_elements_can_be_moved_and_resized(self):
+        from koma.service import ROUTES
+
+        self.assertIn("panel.arrange", ROUTES)
+        page, panel_id = self._fresh_panel("Select")
+        with self.assertRaises(ValueError):
+            self.studio.panel_arrange({"id": panel_id})
+        self.studio.panel_update({"id": panel_id, "dialogue": "Look.", "objects": ["lantern"]})
+        arranged = self.studio.panel_arrange({"id": panel_id})
+        elements = self._panel_row(arranged, page["id"])["elements"]
+        self.assertEqual({item["kind"] for item in elements}, {"balloon", "thing"})
+        moved = self.studio.panel_update(
+            {
+                "id": panel_id,
+                "elements": [
+                    {"id": "line", "kind": "balloon", "text": "Look.", "balloon": "round", "x": 0.2, "y": 0.3, "w": 0.5, "h": 0.24},
+                    {"id": "thing-1", "kind": "thing", "text": "lantern", "x": -1, "y": 0.1, "w": 4, "h": 0.2},
+                ],
+            }
+        )
+        rows = {item["id"]: item for item in self._panel_row(moved, page["id"])["elements"]}
+        self.assertEqual(rows["line"]["x"], 0.2)
+        self.assertEqual(rows["line"]["w"], 0.5)
+        self.assertEqual(rows["thing-1"]["text"], "lantern")
+        self.assertEqual(rows["thing-1"]["x"], 0.0)
+        self.assertEqual(rows["thing-1"]["w"], 1.0)
+        copied = self.studio.page_duplicate({"pageId": page["id"]})
+        copy = next(item for item in copied["tree"]["chapters"][0]["pages"] if item["id"] == copied["pageId"])
+        self.assertEqual(copy["panels"][0]["elements"][0]["text"], "Look.")
+        cleared = self.studio.panel_update({"id": panel_id, "elements": "nope"})
+        self.assertEqual(self._panel_row(cleared, page["id"])["elements"], [])
+        app = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("element-layer", app)
+        self.assertIn('data-pen="el-resize"', app)
+        self.assertIn('data-act="arrange-elements"', app)
+
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
 

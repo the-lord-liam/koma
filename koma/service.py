@@ -320,6 +320,7 @@ class Studio:
             "prompt": panel.get("prompt") or "",
             "objects": _objects_out(panel.get("objects")),
             "vibe": panel.get("vibe") or "",
+            "elements": _clean_elements(panel.get("elements")),
             "refs": self._refs_out("panel", panel["id"], None),
             "imageUrl": media_url(panel.get("image_path")),
             "versions": versions,
@@ -418,6 +419,7 @@ class Studio:
                     "prompt": panel.get("prompt") or "",
                     "objects": panel.get("objects") or "[]",
                     "vibe": panel.get("vibe") or "",
+                    "elements": panel.get("elements") or "[]",
                     "image": image,
                     "refs": refs,
                 }
@@ -1297,6 +1299,7 @@ class Studio:
             "prompt",
             "objects",
             "vibe",
+            "elements",
         }
         copies = []
         for panel in self.store.list_panels(created["id"]):
@@ -1322,6 +1325,7 @@ class Studio:
                     "prompt": original.get("prompt") or "",
                     "objects": original.get("objects") or "[]",
                     "vibe": original.get("vibe") or "",
+                    "elements": original.get("elements") or "[]",
                 },
                 script,
             )
@@ -1379,6 +1383,8 @@ class Studio:
                 fields[dest] = _clip(params.get(source), limit)
         if "objects" in params:
             fields["objects"] = json.dumps(_clean_objects(params.get("objects")))
+        if "elements" in params:
+            fields["elements"] = json.dumps(_clean_elements(params.get("elements")))
         if "characterIds" in params:
             fields["character_ids"] = json.dumps(self._known_character_ids(project["id"], params["characterIds"]))
         if "locationId" in params:
@@ -1390,7 +1396,7 @@ class Studio:
             fields["location_id"] = location_id
         if "continuePrev" in params:
             fields["continue_prev"] = 1 if params.get("continuePrev") else 0
-        if any(key in params for key in ("dialogue", "balloon", "balloonAnchor", "sfx")):
+        if any(key in params for key in ("dialogue", "balloon", "balloonAnchor", "sfx", "elements")):
             self._remember(page["id"])
         self.store.update_panel(panel["id"], fields, set(fields))
         self.store.touch(project["id"])
@@ -2512,6 +2518,16 @@ class Studio:
             needsKey=needs_key,
         )
 
+    def panel_arrange(self, params: dict) -> dict:
+        panel, page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
+        elements = _clean_elements(panel.get("elements")) or _seed_elements(panel)
+        if not elements:
+            raise ValueError("Add a line or a thing before arranging this panel.")
+        self._remember(page["id"])
+        self.store.update_panel(panel["id"], {"elements": json.dumps(elements)}, {"elements"})
+        self.store.touch(project["id"])
+        return self._pack(project["id"])
+
     def panel_separate(self, params: dict) -> dict:
         panel, _page, _chapter, project, characters, location, _slot = self._panel_bundle(params["id"])
         names = [person["name"] for person in characters]
@@ -3098,6 +3114,98 @@ def _page_count(page: dict) -> int:
     return _slot_count(page.get("layout") or "")
 
 
+def _seed_elements(panel: dict) -> list[dict]:
+    seeded = []
+    dialogue = " ".join(str(panel.get("dialogue") or "").split())
+    if dialogue and panel.get("balloon") != "none":
+        seeded.append(
+            {
+                "id": "line",
+                "kind": "balloon",
+                "text": dialogue[:180],
+                "balloon": panel.get("balloon") or "round",
+                "x": 0.46,
+                "y": 0.06,
+                "w": 0.46,
+                "h": 0.22,
+            }
+        )
+    for index, item in enumerate(_objects_out(panel.get("objects"))):
+        if not item.get("on"):
+            continue
+        seeded.append(
+            {
+                "id": f"thing-{index + 1}",
+                "kind": "thing",
+                "text": item["name"],
+                "balloon": "round",
+                "x": 0.08,
+                "y": min(0.72, 0.32 + index * 0.18),
+                "w": 0.34,
+                "h": 0.16,
+            }
+        )
+    return _clean_elements(seeded)
+
+
+def _clean_elements(raw) -> list[dict]:
+    if isinstance(raw, str):
+        raw = _loads(raw, [])
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind")
+        if kind not in {"balloon", "thing"}:
+            continue
+        text = " ".join(str(item.get("text") or "").split())[:180]
+        if kind == "thing" and not text:
+            continue
+        ident = str(item.get("id") or "").strip()
+        if not ident or len(ident) > 40 or any(not (ch.isalnum() or ch in "-_") for ch in ident):
+            ident = f"el{index + 1}"
+        if any(row["id"] == ident for row in out):
+            ident = f"{ident}-{index + 1}"[:40]
+        x = _unit(item.get("x"), 0.1)
+        y = _unit(item.get("y"), 0.1)
+        w = _unit(item.get("w"), 0.4)
+        h = _unit(item.get("h"), 0.22)
+        w = min(1.0, max(0.08, w))
+        h = min(1.0, max(0.08, h))
+        if x + w > 1:
+            x = max(0.0, 1 - w)
+        if y + h > 1:
+            y = max(0.0, 1 - h)
+        balloon = item.get("balloon") if item.get("balloon") in BALLOON_IDS else "round"
+        out.append(
+            {
+                "id": ident,
+                "kind": kind,
+                "text": text,
+                "balloon": balloon,
+                "x": round(x, 4),
+                "y": round(y, 4),
+                "w": round(w, 4),
+                "h": round(h, 4),
+            }
+        )
+        if len(out) >= 8:
+            break
+    return out
+
+
+def _unit(value, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number or number in (float("inf"), float("-inf")):
+        return default
+    return max(0.0, min(1.0, number))
+
+
 def _objects_out(raw) -> list[dict]:
     return _clean_objects(_loads(raw, []) if not isinstance(raw, list) else raw)
 
@@ -3503,6 +3611,7 @@ ROUTES = {
     "panel.revise": Studio.panel_revise,
     "panel.use_version": Studio.panel_use_version,
     "panel.separate": Studio.panel_separate,
+    "panel.arrange": Studio.panel_arrange,
     "panel.letter": Studio.panel_letter,
     "panel.sketch": Studio.panel_sketch,
     "panel.draw_live": Studio.panel_draw_live,
