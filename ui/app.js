@@ -1769,6 +1769,7 @@ function lassoProps(panel) {
       <button type="button" class="ghost ${state.lassoMode === "select" ? "primary" : ""}" data-act="lasso-mode" data-mode="select">Select</button>
       <button type="button" class="ghost ${state.lassoMode === "circle" ? "primary" : ""}" data-act="lasso-mode" data-mode="circle">Circle</button>
     </div>
+    <p class="meta">Lift the pen to redraw the marked part. With a key, that part is drawn again. Without one, it is softened.</p>
     <label class="field">Action
       <textarea data-save="panel" data-field="action" data-entity="${esc(panel.id)}">${esc(panel.action)}</textarea>
     </label>
@@ -4043,6 +4044,7 @@ function onPenUp(event) {
     clearTimeout(drawTimer);
     sendDrawPreview();
   }
+  if (pen.kind === "lasso") sendLasso();
   pen.kind = "";
   pen.pointerId = null;
   pen.host = null;
@@ -4095,6 +4097,20 @@ function sendDrawPreview() {
     paintDataUrl(document.querySelector(".draw-preview"), state.drawPreview);
   }).catch((error) => {
     if (token === drawToken) toast(error.message);
+  });
+}
+
+function sendLasso() {
+  const path = (state.lassoPath || []).map((item) => ({ x: item.x, y: item.y }));
+  if (!state.panelId || path.length < 2) return;
+  const id = state.panelId;
+  const mode = state.lassoMode;
+  return run("Redrawing that part…", async () => {
+    const result = await rpc("panel.lasso", { id, path, mode });
+    absorb(result);
+    state.lassoPath = [];
+    if (result && result.source === "ai") toast("Grok redrew that part.", "ok");
+    else toast("Softened that part on this machine.", "ok");
   });
 }
 

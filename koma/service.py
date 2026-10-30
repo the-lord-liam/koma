@@ -21,7 +21,7 @@ from koma.ai import AIError, Client
 from koma.compose import render_page
 from koma.config import load_config, public_settings, save_config
 from koma.formats import FormatError, catalog as format_catalog, project_pixels, resolve_format
-from koma.ink import clean_sketch, load_png, png_bytes
+from koma.ink import blur_region, clean_sketch, load_png, marks_of, mask_from_marks, paste_region, png_bytes
 from koma.layouts import LAYOUTS, LayoutError, assist_divide, place, reflow_after_delete, to_stored_line
 from koma.lines import extract_lines, strength_of
 from koma.media import media_url, save_image, unlink
@@ -2616,6 +2616,67 @@ class Studio:
         finally:
             sketch.close()
 
+    def panel_lasso(self, params: dict) -> dict:
+        """Redraw the marked part of a panel. A key draws it. Otherwise that part is softened."""
+        panel, page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
+        marks = marks_of(params.get("path"))
+        mode = "circle" if params.get("mode") == "circle" else "select"
+        if len(marks) < 2 or (mode != "circle" and len(marks) < 3):
+            raise ValueError("Circle a part of the panel first.")
+        current = self._panel_picture(panel)
+        mask = mask_from_marks(current.size, marks, mode)
+        if mask.getbbox() is None:
+            current.close()
+            raise ValueError("Circle a part of the panel first.")
+        source = "lines"
+        result = None
+        try:
+            if self._has_xai_key():
+                try:
+                    fresh = self._lasso_picture(panel["id"])
+                    result = paste_region(current, fresh, mask)
+                    fresh.close()
+                    source = "ai"
+                except AIError as error:
+                    if "API key" not in str(error):
+                        raise
+                    result = blur_region(current, mask)
+            else:
+                result = blur_region(current, mask)
+            self._remember(page["id"])
+            path = str(save_image(png_bytes(result)))
+            self.store.add_version(panel["id"], path, "", "Lasso")
+        finally:
+            current.close()
+            mask.close()
+            if result is not None:
+                result.close()
+        self.store.touch(project["id"])
+        return self._pack(project["id"], source=source)
+
+    def _panel_picture(self, panel: dict) -> Image.Image:
+        path = str(panel.get("image_path") or "")
+        if path and Path(path).is_file():
+            image = Image.open(path)
+            image.load()
+            return image
+        return Image.new("RGB", (480, 720), (244, 239, 230))
+
+    def _lasso_picture(self, panel_id: str) -> Image.Image:
+        built, _project = self._panel_build(
+            panel_id,
+            revise="Redraw the marked region. Keep the rest of the panel as it is.",
+        )
+        saved = self._imagine(built["prompt"], built["aspect"], built["refs"])
+        try:
+            image = Image.open(saved)
+            image.load()
+            copy = image.copy()
+            image.close()
+            return copy
+        finally:
+            unlink(saved)
+
     def _draw_from_sketch(self, panel_id: str, sketch: Image.Image) -> bytes:
         path = str(save_image(png_bytes(sketch)))
         saved = ""
@@ -3445,6 +3506,7 @@ ROUTES = {
     "panel.letter": Studio.panel_letter,
     "panel.sketch": Studio.panel_sketch,
     "panel.draw_live": Studio.panel_draw_live,
+    "panel.lasso": Studio.panel_lasso,
     "panel.lines": Studio.panel_lines,
     "panel.delete_ref": Studio.panel_delete_ref,
     "volume.create": Studio.volume_create,
