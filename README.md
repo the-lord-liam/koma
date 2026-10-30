@@ -8,6 +8,24 @@ Contact the creator <a href="https://x.com/the_lord_liam"><img src="docs/x-icon.
 
 Koma is a local manga studio for Ubuntu. It keeps the book, the drawings, and the API key on your machine. Home shows two canvases: a manga page, and a separate illustration. The manga side plans a series, keeps character designs locked to reference art, draws one panel at a time, letters the page in the app, and exports chapters. The illustration side is one picture, with no panels.
 
+## What Koma does
+
+- **Story:** plans the title, volumes, chapters, and pages from a premise, or lets you write the outline yourself.
+- **References:** a board for your own pictures, kept on your computer.
+- **Cast:** describes each character and draws a portrait that keeps them on-model.
+- **3D models:** builds a model from a prompt or a picture, or imports one, and lets you rotate, zoom, and pan it.
+- **Pose and expressions:** bends the model, adds faces and preset poses, and saves the result.
+- **Turntable and animation:** plays clips and exports spinning GIFs or PNGs.
+- **Pages:** picks a layout and draws each panel, keeping each scene consistent with the panel before it.
+- **Draw:** turns your sketch into live AI art, with Tab for a full split screen and support for xAI, a local model, or offline mode.
+- **Lines:** pulls clean line art out of a picture, without uploading it.
+- **Lasso:** redraws just the part of a panel you circle.
+- **Select:** moves and resizes balloons and objects.
+- **Text:** suggests editable speech bubbles with AI.
+- **Editing:** reorder, duplicate, delete, undo, and redo, with autosave.
+- **Export:** print preview, CBZ files, and pages saved to your Documents folder.
+- **Privacy:** no tracking, and everything stays on your computer.
+
 ## Privacy
 
 Koma has no telemetry, analytics, or tracking, and collects no data. Your books, drawings, 3D models, saved poses, and page undo stay in `~/.local/share/koma`. Settings and your API key stay in `~/.config/koma/config.json` (or in `XAI_API_KEY` if that is already set and the file has no key). Exported pages are written to `~/Documents/Koma/`. The only network traffic is when you use the AI features. Story planning and the bot send that text to xAI (`api.x.ai`) with your own key, and those requests ask xAI not to store them. Drawing can send the prompt and any reference images to the same API, and the picture comes back in the reply. If xAI returns a link to the picture instead, Koma downloads that link and nothing else. Draw can instead post the sketch only to a local address you set in Settings. That address has to be on this machine (`localhost`, `127.0.0.1`, or `::1`). Koma does not follow a redirect away from it, does not add telemetry, and does not contact any other host for that request. With neither an xAI key nor a local address, the live preview is cleaned line art on this machine and the sketch is not uploaded. xAI has no 3D API. A 3D model built with the local backend stays on your machine. That path only contacts xAI when a reference picture has to be drawn first. The first time TripoSR runs, that program downloads its own weights from Hugging Face (`huggingface.co`, model `stabilityai/TripoSR`). It does not upload the character. If you choose Meshy in Settings, the prompt and any reference image go to `api.meshy.ai`, and Koma downloads the model from the HTTPS link Meshy returns. If you choose Tripo, the same happens with `api.tripo3d.ai`. Those services are used only when you select them and generate a model. The X button on the About page only takes you to the creator's X profile.
