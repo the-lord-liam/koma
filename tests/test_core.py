@@ -3321,6 +3321,53 @@ process.stdout.write(JSON.stringify(got));
         self.assertEqual(got["sideRightLtr"], got["rightLtr"])
         self.assertEqual(page["panels"][0]["id"], panel_id)
 
+    def test_tone_and_color_stay_selected_across_panels(self):
+        source = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("paintLasso();\n      syncToneButton();", source)
+
+        def js_function(name: str) -> str:
+            marker = f"function {name}("
+            start = source.index(marker)
+            brace = source.index("{", start)
+            depth = 0
+            for index in range(brace, len(source)):
+                if source[index] == "{":
+                    depth += 1
+                elif source[index] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return source[start:index + 1]
+            raise AssertionError(name)
+
+        script = js_function("toolStays") + "\n" + js_function("toneAreaReady") + r"""
+const got = {
+  tone: toolStays("tone"),
+  color: toolStays("color"),
+  lines: toolStays("lines"),
+  draw: toolStays("draw"),
+  lasso: toolStays("lasso"),
+  text: toolStays("text"),
+  circle: toneAreaReady("circle", 2),
+  circleShort: toneAreaReady("circle", 1),
+  area: toneAreaReady("select", 3),
+  areaShort: toneAreaReady("select", 2),
+};
+process.stdout.write(JSON.stringify(got));
+"""
+        completed = self._node(script)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        got = json.loads(completed.stdout)
+        self.assertTrue(got["tone"])
+        self.assertTrue(got["color"])
+        self.assertTrue(got["lines"])
+        self.assertTrue(got["draw"])
+        self.assertFalse(got["lasso"])
+        self.assertFalse(got["text"])
+        self.assertTrue(got["circle"])
+        self.assertFalse(got["circleShort"])
+        self.assertTrue(got["area"])
+        self.assertFalse(got["areaShort"])
+
     def test_readme_covers_draw_and_the_page_tools(self):
         root = Path(__file__).resolve().parents[1]
         readme = (root / "README.md").read_text(encoding="utf-8")

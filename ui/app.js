@@ -2060,6 +2060,22 @@ function linesProps(panel) {
   `;
 }
 
+function toolStays(tool) {
+  return tool === "imagine" || tool === "lines" || tool === "draw" || tool === "select" || tool === "tone" || tool === "color";
+}
+
+function toneAreaReady(mode, count) {
+  return mode === "circle" ? count >= 2 : count >= 3;
+}
+
+function syncToneButton() {
+  const button = document.querySelector('[data-act="apply-tone"][data-area="selection"]');
+  if (!button) return;
+  const panel = currentPanel();
+  const ready = toneAreaReady(state.lassoMode, (state.lassoPath || []).length);
+  button.disabled = state.busy || !panel || !panel.imageUrl || !ready;
+}
+
 function toneReadout() {
   const density = Number.isFinite(state.toneDensity) ? state.toneDensity : 45;
   const size = Number.isFinite(state.toneSize) ? state.toneSize : 35;
@@ -2071,7 +2087,7 @@ function toneProps(panel) {
   const size = Number.isFinite(state.toneSize) ? state.toneSize : 35;
   const kind = state.toneKind || "dot";
   const marks = state.lassoPath || [];
-  const circled = state.lassoMode === "circle" ? marks.length >= 2 : marks.length >= 3;
+  const circled = toneAreaReady(state.lassoMode, marks.length);
   const kinds = [["dot", "Dots"], ["line", "Lines"], ["gradient", "Gradient"]];
   return `
     <p class="rail-kicker">Tone</p>
@@ -3058,11 +3074,11 @@ const actions = {
     if (changed) commitDrawFull();
     state.panelId = nextId;
     if (changed) state.elementId = null;
-    if (changed && state.pageTool !== "imagine" && state.pageTool !== "lines" && state.pageTool !== "draw" && state.pageTool !== "select") {
+    if (changed && !toolStays(state.pageTool)) {
       state.pageTool = "lasso";
-      state.lassoPath = [];
       state.selectedBit = null;
     }
+    if (changed) state.lassoPath = [];
     if (changed) {
       state.drawSketch = "";
       state.drawPreview = "";
@@ -4398,8 +4414,10 @@ function onPenUp(event) {
     sendDrawPreview();
   }
   if (pen.kind === "lasso") {
-    if (state.pageTool === "tone") paintLasso();
-    else sendLasso();
+    if (state.pageTool === "tone") {
+      paintLasso();
+      syncToneButton();
+    } else sendLasso();
   }
   if (pen.kind === "el-move" || pen.kind === "el-resize") {
     const moved = !!pen.moved;
