@@ -252,6 +252,7 @@ class Store:
         self._add_column("panels", "prompt", "TEXT NOT NULL DEFAULT ''")
         self._add_column("panels", "objects", "TEXT NOT NULL DEFAULT '[]'")
         self._add_column("panels", "vibe", "TEXT NOT NULL DEFAULT ''")
+        self._add_column("panels", "elements", "TEXT NOT NULL DEFAULT '[]'")
         self._add_column("meshes", "thumb_path", "TEXT NOT NULL DEFAULT ''")
         self._backfill_volumes()
 
@@ -901,6 +902,7 @@ class Store:
             "prompt": fields.get("prompt") or "",
             "objects": fields.get("objects") or "[]",
             "vibe": fields.get("vibe") or "",
+            "elements": fields.get("elements") or "[]",
         }
         self.update_panel(panel_id, extra, set(extra))
         return self.get_panel(panel_id)

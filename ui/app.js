@@ -52,6 +52,7 @@ const state = {
   groupId: null,
   selectMulti: false,
   selectedBit: null,
+  elementId: null,
   botBox: null,
   sketchPreview: "",
   drawSketch: "",
@@ -1660,9 +1661,12 @@ function pageStage(row, project) {
     const gap = 0.012;
     const style = `left:${(slot.x + gap) * 100}%;top:${(slot.y + gap) * 100}%;width:${Math.max(0.04, slot.w - gap * 2) * 100}%;height:${Math.max(0.04, slot.h - gap * 2) * 100}%;`;
     const image = item.imageUrl ? `background-image:url('${esc(item.imageUrl)}')` : "";
-    const balloon = item.dialogue && item.balloon !== "none"
-      ? `<div class="balloon ${esc(item.balloon)} ${esc(item.balloonAnchor)}">${esc(item.dialogue)}</div>`
-      : "";
+    const placed = (item.elements || []).filter((el) => el.kind === "balloon" && el.text);
+    const balloon = placed.length
+      ? placed.map((el) => `<div class="balloon placed ${esc(el.balloon)}" style="left:${el.x * 100}%;top:${el.y * 100}%;width:${el.w * 100}%;height:${el.h * 100}%">${esc(el.text)}</div>`).join("")
+      : (item.dialogue && item.balloon !== "none"
+        ? `<div class="balloon ${esc(item.balloon)} ${esc(item.balloonAnchor)}">${esc(item.dialogue)}</div>`
+        : "");
     const sfx = item.sfx
       ? `<div class="sfx ${item.balloonAnchor && item.balloonAnchor.startsWith("t") ? "low" : "high"}">${esc(item.sfx)}</div>`
       : "";
@@ -1681,9 +1685,41 @@ function pageStage(row, project) {
   return `<div class="stage-wrap"><div class="stage">${sheet}</div></div>`;
 }
 
+function elementOverlay(panel, slots) {
+  const slot = slots[panel.slot] || { x: 0, y: 0, w: 1, h: 1 };
+  const style = `left:${slot.x * 100}%;top:${slot.y * 100}%;width:${slot.w * 100}%;height:${slot.h * 100}%;`;
+  const boxes = (panel.elements || []).map((el) => {
+    const on = state.elementId === el.id ? " on" : "";
+    return `<div class="el-box${on}" data-pen="el-move" data-id="${esc(el.id)}" style="left:${el.x * 100}%;top:${el.y * 100}%;width:${el.w * 100}%;height:${el.h * 100}%;"><span>${esc(el.text || "")}</span><i data-pen="el-resize" data-id="${esc(el.id)}"></i></div>`;
+  }).join("");
+  return `<div class="element-layer" style="${style}">${boxes}</div>`;
+}
+
+function readElements() {
+  const panel = currentPanel();
+  if (!panel) return [];
+  const prior = {};
+  for (const item of panel.elements || []) prior[item.id] = item;
+  return [...document.querySelectorAll(".el-box")].map((box) => {
+    const id = box.dataset.id;
+    const known = prior[id] || { id, kind: "thing", text: "", balloon: "round" };
+    return {
+      id,
+      kind: known.kind,
+      text: known.text,
+      balloon: known.balloon || "round",
+      x: parseFloat(box.style.left) / 100,
+      y: parseFloat(box.style.top) / 100,
+      w: parseFloat(box.style.width) / 100,
+      h: parseFloat(box.style.height) / 100,
+    };
+  });
+}
+
 function pageOverlays(panel, slots) {
   const slot = slots[panel.slot] || { x: 0, y: 0, w: 1, h: 1 };
   const style = `left:${slot.x * 100}%;top:${slot.y * 100}%;width:${slot.w * 100}%;height:${slot.h * 100}%;`;
+  if (state.pageTool === "select") return elementOverlay(panel, slots);
   if (state.pageTool === "sketch") {
     return `<canvas class="sketch-layer gesture" data-pen="sketch" style="${style}"></canvas>`;
   }
@@ -1831,6 +1867,16 @@ function selectedLine(panel) {
 }
 
 function selectProps(panel) {
+  const elements = panel.elements || [];
+  const selected = elements.find((item) => item.id === state.elementId) || null;
+  const elementNote = selected
+    ? `${selected.kind === "balloon" ? "Balloon" : "Thing"}: ${selected.text || "Empty"}`
+    : "Drag a balloon or a thing. The corner handle resizes it.";
+  const elementField = selected ? `
+    <label class="field">Text
+      <textarea data-save="balloon" data-field="text" data-entity="${esc(selected.id)}">${esc(selected.text || "")}</textarea>
+    </label>
+  ` : "";
   const cast = state.tree.characters.map((person) => {
     const on = (panel.characterIds || []).includes(person.id) ? " on" : "";
     return `<button type="button" class="chip${on}" data-act="pick-cast" data-id="${esc(panel.id)}" data-char="${esc(person.id)}">${esc(person.name)}</button>`;
@@ -1843,6 +1889,9 @@ function selectProps(panel) {
   `).join("") || `<p class="meta">No places yet.</p>`;
   return `
     <p class="rail-kicker">Select</p>
+    <p class="meta">${esc(elementNote)}</p>
+    ${elementField}
+    <button type="button" class="ghost" data-act="arrange-elements" data-id="${esc(panel.id)}" ${state.busy ? "disabled" : ""}>Arrange on the panel</button>
     <p class="meta">${esc(selectedLine(panel))}</p>
     <label class="check">
       <input type="checkbox" data-act="toggle-multi" ${state.selectMulti ? "checked" : ""}>
@@ -2098,6 +2147,31 @@ async function refreshPreview() {
 async function saveField(kind, id, field, value) {
   if (kind === "local") {
     state[field] = value;
+    return;
+  }
+  if (kind === "balloon") {
+    const panel = currentPanel();
+    if (!panel) return;
+    const elements = (panel.elements || []).map((item) => ({ ...item }));
+    const found = elements.find((item) => item.id === id);
+    if (!found) return;
+    found.text = value;
+    const fields = { id: panel.id, elements };
+    if (found.kind === "balloon") {
+      const first = elements.find((item) => item.kind === "balloon");
+      if (first && first.id === found.id) {
+        fields.dialogue = value;
+        fields.balloon = found.balloon || "round";
+      }
+    }
+    setStatus("Saving…");
+    try {
+      absorb(await rpc("panel.update", fields));
+    } catch (error) {
+      setStatus("");
+      throw error;
+    }
+    flashStatus("Saved");
     return;
   }
   let payloadValue = value;
@@ -2798,7 +2872,8 @@ const actions = {
     }
     const changed = state.panelId !== button.dataset.id;
     state.panelId = button.dataset.id;
-    if (changed && state.pageTool !== "imagine" && state.pageTool !== "lines" && state.pageTool !== "draw") {
+    if (changed) state.elementId = null;
+    if (changed && state.pageTool !== "imagine" && state.pageTool !== "lines" && state.pageTool !== "draw" && state.pageTool !== "select") {
       state.pageTool = "lasso";
       state.lassoPath = [];
       state.selectedBit = null;
@@ -3644,6 +3719,12 @@ const actions = {
     state.selectMulti = !!input.checked;
     render();
   },
+  "arrange-elements"() {
+    if (!state.panelId) return;
+    return run("Arranging the panel…", async () => {
+      absorb(await rpc("panel.arrange", { id: state.panelId }));
+    });
+  },
   "separate-panel"() {
     if (!state.panelId) return;
     return run("Separating the panel…", async () => {
@@ -3983,6 +4064,28 @@ function onPenDown(event) {
   const host = event.target.closest && event.target.closest("[data-pen]");
   if (!host) return;
   event.preventDefault();
+  if (host.dataset.pen === "el-move" || host.dataset.pen === "el-resize") {
+    const layer = host.closest(".element-layer");
+    const box = host.closest(".el-box");
+    if (!layer || !box) return;
+    if (box.setPointerCapture) box.setPointerCapture(event.pointerId);
+    pen.kind = host.dataset.pen;
+    pen.pointerId = event.pointerId;
+    pen.host = layer;
+    pen.boxEl = box;
+    pen.moved = false;
+    pen.box = {
+      x: parseFloat(box.style.left) / 100,
+      y: parseFloat(box.style.top) / 100,
+      w: parseFloat(box.style.width) / 100,
+      h: parseFloat(box.style.height) / 100,
+    };
+    pen.origin = penPoint(layer, event);
+    state.elementId = box.dataset.id;
+    document.querySelectorAll(".el-box.on").forEach((el) => el.classList.remove("on"));
+    box.classList.add("on");
+    return;
+  }
   const cap = typeof host.setPointerCapture === "function" ? host : host.ownerSVGElement;
   if (cap && cap.setPointerCapture) cap.setPointerCapture(event.pointerId);
   pen.kind = host.dataset.pen;
@@ -4004,6 +4107,27 @@ function onPenMove(event) {
     return;
   }
   const point = penPoint(pen.host, event);
+  if ((pen.kind === "el-move" || pen.kind === "el-resize") && pen.boxEl && pen.box) {
+    const dx = point.x - pen.origin.x;
+    const dy = point.y - pen.origin.y;
+    if (Math.abs(dx) > 0.004 || Math.abs(dy) > 0.004) pen.moved = true;
+    let x = pen.box.x;
+    let y = pen.box.y;
+    let w = pen.box.w;
+    let h = pen.box.h;
+    if (pen.kind === "el-resize") {
+      w = Math.min(1 - x, Math.max(0.08, pen.box.w + dx));
+      h = Math.min(1 - y, Math.max(0.08, pen.box.h + dy));
+    } else {
+      x = Math.min(1 - w, Math.max(0, pen.box.x + dx));
+      y = Math.min(1 - h, Math.max(0, pen.box.y + dy));
+    }
+    pen.boxEl.style.left = `${x * 100}%`;
+    pen.boxEl.style.top = `${y * 100}%`;
+    pen.boxEl.style.width = `${w * 100}%`;
+    pen.boxEl.style.height = `${h * 100}%`;
+    return;
+  }
   if ((pen.kind === "sketch" || pen.kind === "draw") && pen.sketch) {
     const canvas = pen.host;
     const ctx = pen.sketch;
@@ -4045,6 +4169,24 @@ function onPenUp(event) {
     sendDrawPreview();
   }
   if (pen.kind === "lasso") sendLasso();
+  if (pen.kind === "el-move" || pen.kind === "el-resize") {
+    const moved = !!pen.moved;
+    const elements = readElements();
+    pen.kind = "";
+    pen.pointerId = null;
+    pen.host = null;
+    pen.boxEl = null;
+    pen.box = null;
+    if (moved && elements.length && state.panelId) {
+      rpc("panel.update", { id: state.panelId, elements }).then((result) => {
+        absorb(result);
+        render();
+      }).catch((error) => toast(error.message));
+    } else {
+      render();
+    }
+    return;
+  }
   pen.kind = "";
   pen.pointerId = null;
   pen.host = null;

@@ -277,7 +277,32 @@ input:focus, textarea:focus, select:focus { outline: 2px solid var(--red); borde
 .balloon.caption { border-radius: 2px; }
 .balloon.shout { border-radius: 2px; font-weight: 800; }
 .balloon.tl { top: 6px; left: 6px; }
+.balloon.placed { max-width: none; right: auto; bottom: auto; overflow: hidden; }
 .balloon.tr { top: 6px; right: 6px; }
+.element-layer { position: absolute; z-index: 4; pointer-events: none; }
+.el-box {
+  position: absolute;
+  border: 1px solid #4c8dff;
+  background: rgba(76, 141, 255, 0.12);
+  color: #111;
+  font-size: 11px;
+  line-height: 1.2;
+  pointer-events: auto;
+  touch-action: none;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+.el-box.on { box-shadow: inset 0 0 0 2px #4c8dff; }
+.el-box i {
+  position: absolute;
+  right: -5px;
+  bottom: -5px;
+  width: 12px;
+  height: 12px;
+  background: #f2f2f7;
+  border: 2px solid #4c8dff;
+  border-radius: 2px;
+}
 .balloon.bl { bottom: 6px; left: 6px; }
 .balloon.br { bottom: 6px; right: 6px; }
 .sfx {
