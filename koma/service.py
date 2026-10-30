@@ -21,6 +21,7 @@ from koma.ai import AIError, Client
 from koma.compose import render_page
 from koma.config import load_config, public_settings, save_config
 from koma.formats import FormatError, catalog as format_catalog, project_pixels, resolve_format
+from koma.ink import blur_region, clean_sketch, load_png, marks_of, mask_from_marks, paste_region, png_bytes
 from koma.layouts import LAYOUTS, LayoutError, assist_divide, place, reflow_after_delete, to_stored_line
 from koma.lines import extract_lines, strength_of
 from koma.media import media_url, save_image, unlink
@@ -319,6 +320,7 @@ class Studio:
             "prompt": panel.get("prompt") or "",
             "objects": _objects_out(panel.get("objects")),
             "vibe": panel.get("vibe") or "",
+            "elements": _clean_elements(panel.get("elements")),
             "refs": self._refs_out("panel", panel["id"], None),
             "imageUrl": media_url(panel.get("image_path")),
             "versions": versions,
@@ -417,6 +419,7 @@ class Studio:
                     "prompt": panel.get("prompt") or "",
                     "objects": panel.get("objects") or "[]",
                     "vibe": panel.get("vibe") or "",
+                    "elements": panel.get("elements") or "[]",
                     "image": image,
                     "refs": refs,
                 }
@@ -1296,6 +1299,7 @@ class Studio:
             "prompt",
             "objects",
             "vibe",
+            "elements",
         }
         copies = []
         for panel in self.store.list_panels(created["id"]):
@@ -1321,6 +1325,7 @@ class Studio:
                     "prompt": original.get("prompt") or "",
                     "objects": original.get("objects") or "[]",
                     "vibe": original.get("vibe") or "",
+                    "elements": original.get("elements") or "[]",
                 },
                 script,
             )
@@ -1378,6 +1383,8 @@ class Studio:
                 fields[dest] = _clip(params.get(source), limit)
         if "objects" in params:
             fields["objects"] = json.dumps(_clean_objects(params.get("objects")))
+        if "elements" in params:
+            fields["elements"] = json.dumps(_clean_elements(params.get("elements")))
         if "characterIds" in params:
             fields["character_ids"] = json.dumps(self._known_character_ids(project["id"], params["characterIds"]))
         if "locationId" in params:
@@ -1389,7 +1396,7 @@ class Studio:
             fields["location_id"] = location_id
         if "continuePrev" in params:
             fields["continue_prev"] = 1 if params.get("continuePrev") else 0
-        if any(key in params for key in ("dialogue", "balloon", "balloonAnchor", "sfx")):
+        if any(key in params for key in ("dialogue", "balloon", "balloonAnchor", "sfx", "elements")):
             self._remember(page["id"])
         self.store.update_panel(panel["id"], fields, set(fields))
         self.store.touch(project["id"])
@@ -2511,6 +2518,16 @@ class Studio:
             needsKey=needs_key,
         )
 
+    def panel_arrange(self, params: dict) -> dict:
+        panel, page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
+        elements = _clean_elements(panel.get("elements")) or _seed_elements(panel)
+        if not elements:
+            raise ValueError("Add a line or a thing before arranging this panel.")
+        self._remember(page["id"])
+        self.store.update_panel(panel["id"], {"elements": json.dumps(elements)}, {"elements"})
+        self.store.touch(project["id"])
+        return self._pack(project["id"])
+
     def panel_separate(self, params: dict) -> dict:
         panel, _page, _chapter, project, characters, location, _slot = self._panel_bundle(params["id"])
         names = [person["name"] for person in characters]
@@ -2547,49 +2564,149 @@ class Studio:
         return self._pack(project["id"], things=things, characters=names, background=place_name)
 
     def panel_letter(self, params: dict) -> dict:
-        panel, _page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
-        dialogue = (panel.get("dialogue") or "").strip()
-        balloon = panel.get("balloon") if panel.get("balloon") in BALLOON_IDS else "round"
-        anchor = panel.get("balloon_anchor") if panel.get("balloon_anchor") in ANCHOR_IDS else "tr"
-        applied = False
-        reply, _needs_key = self._complete(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Write one speech balloon for this manga panel. "
-                        'Reply with JSON only: {"dialogue": "...", "balloon": "round|shout|thought|caption|none", "anchor": "tl|tr|bl|br"}. '
-                        "No letters belong in the drawing."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Action: {panel.get('action') or ''}. Existing line: {dialogue}.",
-                },
-            ]
-        )
-        parsed = _json_object(reply or "")
-        if parsed and str(parsed.get("dialogue") or "").strip():
-            dialogue = _clip(parsed.get("dialogue"), 2000).strip()
-            if parsed.get("balloon") in BALLOON_IDS:
-                balloon = parsed["balloon"]
-            if parsed.get("anchor") in ANCHOR_IDS:
-                anchor = parsed["anchor"]
-            applied = True
-        if not applied:
-            action = (panel.get("action") or "").strip()
-            if action and not (panel.get("dialogue") or "").strip():
-                dialogue = action.split(".")[0].split(";")[0].strip()[:2000]
-                balloon = "round"
-            elif not action and not (panel.get("dialogue") or "").strip():
-                raise ValueError("Write an action or a line, and Koma can letter the balloon.")
+        panel, page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
+        notes = _panel_notes(panel, page)
+        balloons: list[dict] = []
+        source = "template"
+        if self._has_xai_key():
+            reply, needs_key = self._complete(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Write up to two speech balloons from the panel notes. "
+                            'Reply with JSON only: {"balloons": [{"dialogue": "...", "balloon": "round|shout|thought|caption", "anchor": "tl|tr|bl|br"}]}. '
+                            "No letters belong in the drawing."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Notes:\n{notes or '(none)'}\nExisting line: {panel.get('dialogue') or ''}",
+                    },
+                ]
+            )
+            if not needs_key:
+                balloons = _balloons_from_reply(reply or "")
+                if balloons:
+                    source = "ai"
+        if not balloons:
+            balloons = _balloon_template(notes, panel.get("dialogue") or "")
+            source = "template"
+        fresh = _elements_from_balloons(balloons)
+        kept = [item for item in _clean_elements(panel.get("elements")) if item.get("kind") != "balloon"]
+        elements = _clean_elements(fresh + kept)
+        first = balloons[0]
+        self._remember(page["id"])
         self.store.update_panel(
             panel["id"],
-            {"dialogue": dialogue, "balloon": balloon, "balloon_anchor": anchor},
-            {"dialogue", "balloon", "balloon_anchor"},
+            {
+                "dialogue": first["dialogue"],
+                "balloon": first["balloon"],
+                "balloon_anchor": first["anchor"],
+                "elements": json.dumps(elements),
+            },
+            {"dialogue", "balloon", "balloon_anchor", "elements"},
         )
         self.store.touch(project["id"])
-        return self._pack(project["id"])
+        return self._pack(project["id"], source=source)
+
+    def _has_xai_key(self) -> bool:
+        return bool(str(load_config().get("api_key") or "").strip())
+
+    def panel_draw_live(self, params: dict) -> dict:
+        """Live preview for the Draw tool. A key asks for a picture. Otherwise the lines are cleaned here."""
+        panel_id = params["id"]
+        self._panel_bundle(panel_id)
+        sketch = load_png(str(params.get("png") or ""))
+        try:
+            if self._has_xai_key():
+                try:
+                    data = self._draw_from_sketch(panel_id, sketch)
+                    return {"source": "ai", "png": base64.b64encode(data).decode("ascii")}
+                except AIError as error:
+                    if "API key" not in str(error):
+                        raise
+            cleaned = clean_sketch(sketch)
+            try:
+                return {"source": "lines", "png": base64.b64encode(png_bytes(cleaned)).decode("ascii")}
+            finally:
+                cleaned.close()
+        finally:
+            sketch.close()
+
+    def panel_lasso(self, params: dict) -> dict:
+        """Redraw the marked part of a panel. A key draws it. Otherwise that part is softened."""
+        panel, page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
+        marks = marks_of(params.get("path"))
+        mode = "circle" if params.get("mode") == "circle" else "select"
+        if len(marks) < 2 or (mode != "circle" and len(marks) < 3):
+            raise ValueError("Circle a part of the panel first.")
+        current = self._panel_picture(panel)
+        mask = mask_from_marks(current.size, marks, mode)
+        if mask.getbbox() is None:
+            current.close()
+            raise ValueError("Circle a part of the panel first.")
+        source = "lines"
+        result = None
+        try:
+            if self._has_xai_key():
+                try:
+                    fresh = self._lasso_picture(panel["id"])
+                    result = paste_region(current, fresh, mask)
+                    fresh.close()
+                    source = "ai"
+                except AIError as error:
+                    if "API key" not in str(error):
+                        raise
+                    result = blur_region(current, mask)
+            else:
+                result = blur_region(current, mask)
+            self._remember(page["id"])
+            path = str(save_image(png_bytes(result)))
+            self.store.add_version(panel["id"], path, "", "Lasso")
+        finally:
+            current.close()
+            mask.close()
+            if result is not None:
+                result.close()
+        self.store.touch(project["id"])
+        return self._pack(project["id"], source=source)
+
+    def _panel_picture(self, panel: dict) -> Image.Image:
+        path = str(panel.get("image_path") or "")
+        if path and Path(path).is_file():
+            image = Image.open(path)
+            image.load()
+            return image
+        return Image.new("RGB", (480, 720), (244, 239, 230))
+
+    def _lasso_picture(self, panel_id: str) -> Image.Image:
+        built, _project = self._panel_build(
+            panel_id,
+            revise="Redraw the marked region. Keep the rest of the panel as it is.",
+        )
+        saved = self._imagine(built["prompt"], built["aspect"], built["refs"])
+        try:
+            image = Image.open(saved)
+            image.load()
+            copy = image.copy()
+            image.close()
+            return copy
+        finally:
+            unlink(saved)
+
+    def _draw_from_sketch(self, panel_id: str, sketch: Image.Image) -> bytes:
+        path = str(save_image(png_bytes(sketch)))
+        saved = ""
+        try:
+            built, _project = self._panel_build(panel_id, sketch=path)
+            saved = self._imagine(built["prompt"], built["aspect"], built["refs"])
+            return Path(saved).read_bytes()
+        finally:
+            if path:
+                unlink(path)
+            if saved and saved != path:
+                unlink(saved)
 
     def panel_sketch(self, params: dict) -> dict:
         panel, _page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
@@ -2999,6 +3116,176 @@ def _page_count(page: dict) -> int:
     return _slot_count(page.get("layout") or "")
 
 
+def _panel_notes(panel: dict, page: dict) -> str:
+    bits = [
+        page.get("notes") or "",
+        panel.get("action") or "",
+        panel.get("extra") or "",
+        panel.get("prompt") or "",
+    ]
+    return "\n".join(str(bit).strip() for bit in bits if str(bit).strip())
+
+
+def _balloon_template(notes: str, existing: str = "") -> list[dict]:
+    text = " ".join(str(notes or existing or "").split())
+    parts: list[str] = []
+    if text:
+        for chunk in text.replace("!", ".").replace("?", ".").split("."):
+            bit = " ".join(chunk.split())
+            if bit:
+                parts.append(bit[:180])
+            if len(parts) >= 2:
+                break
+    if not parts:
+        parts = ["What happens in this panel?"]
+    kinds = ["round", "thought"]
+    anchors = ["tr", "tl"]
+    return [
+        {"dialogue": bit, "balloon": kinds[index % 2], "anchor": anchors[index % 2]}
+        for index, bit in enumerate(parts)
+    ]
+
+
+def _balloons_from_reply(reply: str) -> list[dict]:
+    parsed = _json_object(reply)
+    if not parsed:
+        return []
+    found = []
+    raw = parsed.get("balloons")
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            text = " ".join(str(item.get("dialogue") or item.get("text") or "").split())[:180]
+            if not text:
+                continue
+            balloon = item.get("balloon") if item.get("balloon") in BALLOON_IDS else "round"
+            anchor = item.get("anchor") if item.get("anchor") in ANCHOR_IDS else "tr"
+            found.append({"dialogue": text, "balloon": balloon, "anchor": anchor})
+            if len(found) >= 3:
+                break
+    if found:
+        return found
+    text = " ".join(str(parsed.get("dialogue") or "").split())[:180]
+    if not text:
+        return []
+    balloon = parsed.get("balloon") if parsed.get("balloon") in BALLOON_IDS else "round"
+    anchor = parsed.get("anchor") if parsed.get("anchor") in ANCHOR_IDS else "tr"
+    return [{"dialogue": text, "balloon": balloon, "anchor": anchor}]
+
+
+def _elements_from_balloons(balloons: list[dict]) -> list[dict]:
+    spots = [(0.46, 0.06), (0.08, 0.34), (0.28, 0.62)]
+    seeded = []
+    for index, item in enumerate(balloons):
+        x, y = spots[index % len(spots)]
+        seeded.append(
+            {
+                "id": f"balloon-{index + 1}",
+                "kind": "balloon",
+                "text": item["dialogue"],
+                "balloon": item["balloon"],
+                "x": x,
+                "y": y,
+                "w": 0.46,
+                "h": 0.22,
+            }
+        )
+    return _clean_elements(seeded)
+
+
+def _seed_elements(panel: dict) -> list[dict]:
+    seeded = []
+    dialogue = " ".join(str(panel.get("dialogue") or "").split())
+    if dialogue and panel.get("balloon") != "none":
+        seeded.append(
+            {
+                "id": "line",
+                "kind": "balloon",
+                "text": dialogue[:180],
+                "balloon": panel.get("balloon") or "round",
+                "x": 0.46,
+                "y": 0.06,
+                "w": 0.46,
+                "h": 0.22,
+            }
+        )
+    for index, item in enumerate(_objects_out(panel.get("objects"))):
+        if not item.get("on"):
+            continue
+        seeded.append(
+            {
+                "id": f"thing-{index + 1}",
+                "kind": "thing",
+                "text": item["name"],
+                "balloon": "round",
+                "x": 0.08,
+                "y": min(0.72, 0.32 + index * 0.18),
+                "w": 0.34,
+                "h": 0.16,
+            }
+        )
+    return _clean_elements(seeded)
+
+
+def _clean_elements(raw) -> list[dict]:
+    if isinstance(raw, str):
+        raw = _loads(raw, [])
+    if not isinstance(raw, list):
+        return []
+    out = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            continue
+        kind = item.get("kind")
+        if kind not in {"balloon", "thing"}:
+            continue
+        text = " ".join(str(item.get("text") or "").split())[:180]
+        if kind == "thing" and not text:
+            continue
+        ident = str(item.get("id") or "").strip()
+        if not ident or len(ident) > 40 or any(not (ch.isalnum() or ch in "-_") for ch in ident):
+            ident = f"el{index + 1}"
+        if any(row["id"] == ident for row in out):
+            ident = f"{ident}-{index + 1}"[:40]
+        x = _unit(item.get("x"), 0.1)
+        y = _unit(item.get("y"), 0.1)
+        w = _unit(item.get("w"), 0.4)
+        h = _unit(item.get("h"), 0.22)
+        w = min(1.0, max(0.08, w))
+        h = min(1.0, max(0.08, h))
+        if x + w > 1:
+            x = max(0.0, 1 - w)
+        if y + h > 1:
+            y = max(0.0, 1 - h)
+        balloon = item.get("balloon") if item.get("balloon") in BALLOON_IDS else "round"
+        out.append(
+            {
+                "id": ident,
+                "kind": kind,
+                "text": text,
+                "balloon": balloon,
+                "x": round(x, 4),
+                "y": round(y, 4),
+                "w": round(w, 4),
+                "h": round(h, 4),
+            }
+        )
+        if len(out) >= 8:
+            break
+    return out
+
+
+def _unit(value, default: float) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return default
+    if number != number or number in (float("inf"), float("-inf")):
+        return default
+    return max(0.0, min(1.0, number))
+
+
 def _objects_out(raw) -> list[dict]:
     return _clean_objects(_loads(raw, []) if not isinstance(raw, list) else raw)
 
@@ -3404,8 +3691,11 @@ ROUTES = {
     "panel.revise": Studio.panel_revise,
     "panel.use_version": Studio.panel_use_version,
     "panel.separate": Studio.panel_separate,
+    "panel.arrange": Studio.panel_arrange,
     "panel.letter": Studio.panel_letter,
     "panel.sketch": Studio.panel_sketch,
+    "panel.draw_live": Studio.panel_draw_live,
+    "panel.lasso": Studio.panel_lasso,
     "panel.lines": Studio.panel_lines,
     "panel.delete_ref": Studio.panel_delete_ref,
     "volume.create": Studio.volume_create,
