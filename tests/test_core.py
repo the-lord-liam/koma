@@ -2590,6 +2590,71 @@ process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: O
         self.assertIn("paintCanvasOutline", view)
         self.assertIn("uOutline", view)
         self.assertIn("gl.FRONT", view)
+        self.assertIn('data-character-id="', app)
+        self.assertIn("rememberOutline", app)
+        self.assertIn("applyStoredOutline", app)
+        self.assertIn('koma-outline:"', view)
+        self.assertIn("function rememberOutline", view)
+        self.assertIn("function applyStoredOutline", view)
+        self.assertIn("resetMeshCamera(canvas && canvas._geom)", app)
+
+    def test_outline_is_remembered_per_character(self) -> None:
+        script = r"""
+const fs = require("fs");
+const vm = require("vm");
+const store = {};
+global.window = global;
+global.localStorage = {
+  getItem(key) { return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null; },
+  setItem(key, value) { store[key] = String(value); },
+};
+global.document = {
+  querySelector() { return null; },
+  querySelectorAll() { return []; },
+  addEventListener() {},
+  createElement() { return { getContext() { return null; } }; },
+};
+global.performance = { now: () => 0 };
+global.requestAnimationFrame = () => 1;
+vm.runInThisContext(fs.readFileSync("ui/view3d.js", "utf8"));
+rememberOutline("c1", true);
+rememberOutline("c2", false);
+rememberOutline("", true);
+meshCamera.characterId = "";
+meshCamera.outline = false;
+applyStoredOutline("c1");
+const first = meshCamera.outline === true && meshCamera.characterId === "c1";
+applyStoredOutline("c1");
+meshCamera.outline = false;
+applyStoredOutline("c1");
+const kept = meshCamera.outline === false;
+meshCamera.characterId = "";
+applyStoredOutline("c2");
+const second = meshCamera.outline === false && meshCamera.characterId === "c2";
+meshCamera.characterId = "";
+applyStoredOutline("c3");
+const fresh = meshCamera.outline === false && meshCamera.characterId === "c3";
+meshCamera.characterId = "";
+applyStoredOutline("c1");
+const again = meshCamera.outline === true;
+process.stdout.write(JSON.stringify({
+  first, kept, second, fresh, again,
+  c1: store["koma-outline:c1"],
+  c2: store["koma-outline:c2"],
+  empty: Object.prototype.hasOwnProperty.call(store, "koma-outline:") ? store["koma-outline:"] : null,
+}));
+"""
+        completed = self._node(script)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        got = json.loads(completed.stdout)
+        self.assertTrue(got["first"])
+        self.assertTrue(got["kept"])
+        self.assertTrue(got["second"])
+        self.assertTrue(got["fresh"])
+        self.assertTrue(got["again"])
+        self.assertEqual(got["c1"], "1")
+        self.assertEqual(got["c2"], "0")
+        self.assertIsNone(got["empty"])
 
     def test_line_extraction_is_local_ink_on_a_clear_ground(self):
         from koma.lines import extract_lines, strength_of
