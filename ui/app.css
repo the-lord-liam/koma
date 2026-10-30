@@ -1255,6 +1255,7 @@ body[data-studio="1"] .settings { background: var(--ink); }
   flex-direction: column;
   gap: 8px;
 }
+.tool-props input[type="range"] { width: 100%; }
 .tool-strip {
   width: 64px;
   flex: none;

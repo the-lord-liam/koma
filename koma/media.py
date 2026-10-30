@@ -41,10 +41,18 @@ def media_url(path: str | None) -> str | None:
     return f"koma:///media/{name}"
 
 
+def flatten_on_white(image: Image.Image) -> Image.Image:
+    """Composite onto white and return RGB, so clear pixels stay paper."""
+    rgba = image.convert("RGBA")
+    base = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+    base.alpha_composite(rgba)
+    return base.convert("RGB")
+
+
 def jpeg_data_uri(path: Path, longest: int = 768) -> str:
     """Shrink a reference to the size the image model actually uses."""
     with Image.open(path) as image:
-        image = image.convert("RGB")
+        image = flatten_on_white(image)
         image.thumbnail((longest, longest), Image.Resampling.LANCZOS)
         buffer = io.BytesIO()
         image.save(buffer, format="JPEG", quality=85)

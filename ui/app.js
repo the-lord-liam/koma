@@ -43,6 +43,7 @@ const state = {
   navVolumeId: null,
   navChapterId: null,
   pageTool: "lasso",
+  lineStrength: 55,
   lassoMode: "select",
   divideOn: false,
   divide: { x: 0.5, y: 0.5, angle: 0 },
@@ -281,7 +282,7 @@ function paintHelp() {
       <ul>
         <li><kbd>?</kbd> Show or hide this list</li>
         <li><kbd>R</kbd> Open the reference board for this book</li>
-        <li><kbd>1</kbd>–<kbd>6</kbd> Lasso, Select, Text, Sketch, Effects, Imagine</li>
+        <li><kbd>1</kbd>–<kbd>7</kbd> Lasso, Select, Text, Sketch, Effects, Imagine, Lines</li>
         <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> Undo a page edit</li>
         <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> Redo</li>
         <li><kbd>[</kbd> <kbd>]</kbd> Move the selected panel earlier or later</li>
@@ -1708,6 +1709,7 @@ const PAGE_TOOLS = [
   ["sketch", "Sketch"],
   ["vfx", "Effects"],
   ["imagine", "Imagine"],
+  ["lines", "Lines"],
 ];
 
 const VIBES = ["Screentone", "Speed lines", "Rain", "Night", "Dust", "Spark", "Quiet", "Harsh light"];
@@ -1735,6 +1737,7 @@ function toolProps(panel) {
   if (state.pageTool === "text") return textProps(panel);
   if (state.pageTool === "sketch") return sketchProps(panel);
   if (state.pageTool === "vfx") return vibeProps(panel);
+  if (state.pageTool === "lines") return linesProps(panel);
   return lassoProps(panel);
 }
 
@@ -1889,6 +1892,20 @@ function sketchProps(panel) {
       <textarea data-save="panel" data-field="prompt" data-entity="${esc(panel.id)}">${esc(panel.prompt || "")}</textarea>
     </label>
     <p class="meta">Panel ${panel.slot + 1}${panel.imageUrl ? " already has a drawing." : "."}</p>
+  `;
+}
+
+function linesProps(panel) {
+  const strength = Number.isFinite(state.lineStrength) ? state.lineStrength : 55;
+  return `
+    <p class="rail-kicker">Lines</p>
+    <p class="meta">Black line art on a clear ground. It stays on this machine.</p>
+    <label class="field">Strength
+      <input type="range" min="1" max="100" step="1" data-line-strength value="${strength}" aria-label="Line strength">
+    </label>
+    <p class="meta" data-line-readout>${strength}. Lower keeps the darkest strokes. Higher keeps lighter edges too.</p>
+    <button type="button" class="rail-go" data-act="extract-lines" data-id="${esc(panel.id)}" ${state.busy || !panel.imageUrl ? "disabled" : ""}>Extract from this panel</button>
+    <button type="button" class="ghost" data-act="extract-lines" data-id="${esc(panel.id)}" data-from="file" ${state.busy ? "disabled" : ""}>Extract from an image</button>
   `;
 }
 
@@ -2763,7 +2780,7 @@ const actions = {
     }
     const changed = state.panelId !== button.dataset.id;
     state.panelId = button.dataset.id;
-    if (changed && state.pageTool !== "imagine") {
+    if (changed && state.pageTool !== "imagine" && state.pageTool !== "lines") {
       state.pageTool = "lasso";
       state.lassoPath = [];
       state.selectedBit = null;
@@ -3296,6 +3313,23 @@ const actions = {
       state.printFor = button.dataset.id;
       state.sheetUrl = result.url;
       state.sheetStamp = Date.now();
+    });
+  },
+  async "extract-lines"(button) {
+    const id = button.dataset.id;
+    if (!id) return;
+    const params = {
+      id,
+      strength: Math.min(1, Math.max(0, (Number(state.lineStrength) || 55) / 100)),
+    };
+    if (button.dataset.from === "file") {
+      const picked = await rpc("shell.pick_image", {});
+      if (!picked || !picked.path) return;
+      params.path = picked.path;
+    }
+    return run("Extracting lines…", async () => {
+      absorb(await rpc("panel.lines", params));
+      toast("Line art is on the panel.", "ok");
     });
   },
   async "import-ref"(button) {
@@ -4145,6 +4179,12 @@ document.addEventListener("focusout", (event) => {
 
 document.addEventListener("input", (event) => {
   const el = event.target;
+  if (el && el.dataset && "lineStrength" in el.dataset) {
+    state.lineStrength = Number(el.value) || 1;
+    const readout = document.querySelector("[data-line-readout]");
+    if (readout) readout.textContent = `${state.lineStrength}. Lower keeps the darkest strokes. Higher keeps lighter edges too.`;
+    return;
+  }
   if (el && el.id === "bot-draft") state.botDraft = el.value;
   if (el && el.dataset && el.dataset.poseAxis && window.setPoseAxis) {
     setPoseAxis(el.dataset.poseAxis, el.value);
@@ -4251,8 +4291,8 @@ document.addEventListener("keydown", (event) => {
       if (act) Promise.resolve(act({ dataset: { id: state.panelId, dir: event.key === "[" ? "-1" : "1" } })).catch((error) => toast(error.message || String(error)));
       return;
     }
-    const toolKeys = ["lasso", "select", "text", "sketch", "vfx", "imagine"];
-    const toolIndex = "123456".indexOf(event.key);
+    const toolKeys = ["lasso", "select", "text", "sketch", "vfx", "imagine", "lines"];
+    const toolIndex = "1234567".indexOf(event.key);
     if (toolIndex >= 0) {
       event.preventDefault();
       const act = actions["pick-tool"];

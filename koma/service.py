@@ -22,6 +22,7 @@ from koma.compose import render_page
 from koma.config import load_config, public_settings, save_config
 from koma.formats import FormatError, catalog as format_catalog, project_pixels, resolve_format
 from koma.layouts import LAYOUTS, LayoutError, assist_divide, place, reflow_after_delete, to_stored_line
+from koma.lines import extract_lines, strength_of
 from koma.media import media_url, save_image, unlink
 from koma.mesh import (
     NOT_INSTALLED,
@@ -2081,14 +2082,7 @@ class Studio:
         if owner not in {"character", "location", "panel", "page", "project"}:
             raise ValueError("Choose a character, a place, a page, a panel, or the reference board.")
         source = Path(str(params.get("path") or "")).expanduser()
-        if not source.is_file():
-            raise ValueError("Choose an image file.")
-        resolved = source.resolve()
-        roots = [Path.home().resolve(), Path(tempfile.gettempdir()).resolve(), data_dir().resolve()]
-        if not any(resolved == root or root in resolved.parents for root in roots):
-            raise ValueError("Choose an image inside your home folder.")
-        if resolved.stat().st_size > 25_000_000:
-            raise ValueError("That image is larger than 25 MB.")
+        resolved = _local_image_path(source)
         try:
             with Image.open(resolved) as image:
                 image.load()
@@ -2627,6 +2621,29 @@ class Studio:
         finally:
             if path and path != saved:
                 unlink(path)
+        self.store.touch(project["id"])
+        return self._pack(project["id"])
+
+    def panel_lines(self, params: dict) -> dict:
+        panel, page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
+        amount = strength_of(params.get("strength"), 0.55)
+        raw_path = str(params.get("path") or "").strip()
+        if raw_path:
+            picture = _load_picture(_local_image_path(raw_path))
+        else:
+            current = str(panel.get("image_path") or "")
+            if not current or not Path(current).is_file():
+                raise ValueError("Draw or import a picture before extracting lines.")
+            picture = _load_picture(Path(current))
+        try:
+            lines = extract_lines(picture, amount)
+        finally:
+            picture.close()
+        buffer = io.BytesIO()
+        lines.save(buffer, format="PNG")
+        saved = str(save_image(buffer.getvalue()))
+        self._remember(page["id"])
+        self.store.add_version(panel["id"], saved, "", "Lines")
         self.store.touch(project["id"])
         return self._pack(project["id"])
 
@@ -3310,6 +3327,32 @@ def _direction(value) -> int:
     return -1 if number < 0 else 1
 
 
+def _local_image_path(raw) -> Path:
+    source = Path(str(raw or "")).expanduser()
+    if not source.is_file():
+        raise ValueError("Choose an image file.")
+    resolved = source.resolve()
+    roots = [Path.home().resolve(), Path(tempfile.gettempdir()).resolve(), data_dir().resolve()]
+    if not any(resolved == root or root in resolved.parents for root in roots):
+        raise ValueError("Choose an image inside your home folder.")
+    if resolved.stat().st_size > 25_000_000:
+        raise ValueError("That image is larger than 25 MB.")
+    return resolved
+
+
+def _load_picture(path: Path) -> Image.Image:
+    try:
+        with Image.open(path) as image:
+            image.load()
+            if max(image.size) > 8000:
+                raise ValueError("That image is too large.")
+            return image.copy()
+    except ValueError:
+        raise
+    except Exception:
+        raise ValueError("That file is not an image Koma can read.") from None
+
+
 def _bounded(value, default: int, low: int, high: int) -> int:
     try:
         number = int(value)
@@ -3363,6 +3406,7 @@ ROUTES = {
     "panel.separate": Studio.panel_separate,
     "panel.letter": Studio.panel_letter,
     "panel.sketch": Studio.panel_sketch,
+    "panel.lines": Studio.panel_lines,
     "panel.delete_ref": Studio.panel_delete_ref,
     "volume.create": Studio.volume_create,
     "volume.update": Studio.volume_update,

@@ -94,6 +94,27 @@ class CoreTests(unittest.TestCase):
         self.store.close()
         self.tmp.cleanup()
 
+    def _node(self, script: str):
+        import subprocess
+
+        root = Path(self.tmp.name) / "node-cwd"
+        ui = root / "ui"
+        ui.mkdir(parents=True, exist_ok=True)
+        target = ui / "view3d.js"
+        source = Path(__file__).resolve().parents[1] / "ui" / "view3d.js"
+        if not target.exists():
+            try:
+                target.symlink_to(source)
+            except OSError:
+                target.write_bytes(source.read_bytes())
+        return subprocess.run(
+            ["node", "-e", script],
+            cwd=root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
     def test_plan_apply_draw_and_export(self):
         created = self.studio.project_create({"title": "Draft", "premise": "A theft at the pier."})
         project_id = created["tree"]["project"]["id"]
@@ -1770,7 +1791,6 @@ class CoreTests(unittest.TestCase):
     def test_animation_retarget_and_posed_export(self):
         import math
         import struct
-        import subprocess
 
         from koma.mesh import (
             _assemble,
@@ -1982,7 +2002,7 @@ const held = sampleChannel([0, 1], [[0, 0, 0], [3, 0, 0]], 0.75, "STEP");
 const curved = sampleChannel([0, 1], [[0, 0, 0], [0, 0, 0], [0, 0, 0], [0, 0, 0], [2, 0, 0], [0, 0, 0]], 0.5, "CUBICSPLINE");
 process.stdout.write(JSON.stringify({ mid, held, curved }));
 """
-        completed = subprocess.run(["node", "-e", script], cwd="/workspace", capture_output=True, text=True, check=False)
+        completed = self._node(script)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         got = json.loads(completed.stdout)
         self.assertAlmostEqual(got["mid"][2], math.sin(math.pi / 8), places=5)
@@ -1990,8 +2010,6 @@ process.stdout.write(JSON.stringify({ mid, held, curved }));
         self.assertAlmostEqual(got["curved"][0], 1.0, places=5)
 
     def test_preset_knees_bend_forward_and_hinges_clamp(self):
-        import subprocess
-
         script = r"""
 const fs = require("fs");
 const vm = require("vm");
@@ -2224,7 +2242,7 @@ for (const rightX of [0.2, -0.2]) {
 }
 process.stdout.write(JSON.stringify(report));
 """
-        completed = subprocess.run(["node", "-e", script], cwd="/workspace", capture_output=True, text=True, check=False)
+        completed = self._node(script)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
         self.assertEqual(len(report), 2)
@@ -2291,8 +2309,6 @@ process.stdout.write(JSON.stringify(report));
                     self.assertLessEqual(angle, hinge[1] + 0.5, name)
 
     def test_finger_curl_closes_the_hand(self):
-        import subprocess
-
         script = r"""
 const fs = require("fs");
 const vm = require("vm");
@@ -2364,7 +2380,7 @@ process.stdout.write(JSON.stringify({
   halfKeys: Object.keys(half).length,
 }));
 """
-        completed = subprocess.run(["node", "-e", script], cwd="/workspace", capture_output=True, text=True, check=False)
+        completed = self._node(script)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         report = json.loads(completed.stdout)
         self.assertEqual(report["emptyKeys"], 0)
@@ -2373,8 +2389,6 @@ process.stdout.write(JSON.stringify({
         self.assertGreater(report["full"], report["half"] + 0.15)
 
     def test_mirror_copies_left_limbs_to_the_right(self):
-        import subprocess
-
         script = r"""
 const fs = require("fs");
 const vm = require("vm");
@@ -2464,7 +2478,7 @@ const restRight = limb(geom, restWorlds, "rightUpperArm", "rightLowerArm");
 const bindRight = limb(geom, bindWorlds, "rightUpperArm", "rightLowerArm");
 process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: Object.keys(pose).filter((name) => name.startsWith("right")) }));
 """
-        completed = subprocess.run(["node", "-e", script], cwd="/workspace", capture_output=True, text=True, check=False)
+        completed = self._node(script)
         self.assertEqual(completed.returncode, 0, completed.stderr)
         got = json.loads(completed.stdout)
         self.assertIn("rightUpperArm", got["rightKeys"])
@@ -2576,6 +2590,128 @@ process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: O
         self.assertIn("paintCanvasOutline", view)
         self.assertIn("uOutline", view)
         self.assertIn("gl.FRONT", view)
+
+    def test_line_extraction_is_local_ink_on_a_clear_ground(self):
+        from koma.lines import extract_lines, strength_of
+        from koma.service import ROUTES
+
+        self.assertEqual(strength_of("nope"), 0.55)
+        self.assertEqual(strength_of(4), 1.0)
+        self.assertEqual(strength_of(-3), 0.0)
+        self.assertEqual(strength_of(float("nan")), 0.55)
+        self.assertIn("panel.lines", ROUTES)
+
+        def sample(image, x, y):
+            return image.getpixel((x, y))
+
+        art = Image.new("RGB", (64, 48), (255, 255, 255))
+        for y in range(6, 42):
+            art.putpixel((14, y), (0, 0, 0))
+            art.putpixel((15, y), (0, 0, 0))
+            art.putpixel((28, y), (120, 118, 122))
+        for y in range(8, 28):
+            for x in range(40, 58):
+                art.putpixel((x, y), (180, 20, 30))
+        for y in range(32, 44):
+            for x in range(40, 58):
+                art.putpixel((x, y), (8, 8, 8))
+
+        faint = extract_lines(art, 0.25)
+        strong = extract_lines(art, 0.85)
+        self.assertEqual(faint.mode, "RGBA")
+        self.assertEqual(sample(faint, 4, 20), (0, 0, 0, 0))
+        self.assertEqual(sample(faint, 14, 20)[3], 255)
+        self.assertEqual(sample(faint, 14, 20)[:3], (0, 0, 0))
+        self.assertEqual(sample(faint, 28, 20)[3], 0)
+        self.assertGreater(sample(strong, 28, 20)[3], 200)
+        self.assertEqual(sample(strong, 48, 16)[3], 0)
+        self.assertGreater(sample(strong, 40, 12)[3], 200)
+        self.assertEqual(sample(strong, 48, 36)[3], 255)
+        self.assertEqual(sample(extract_lines(Image.new("RGB", (20, 20), "white"), 1), 0, 0)[3], 0)
+        clear = Image.new("RGBA", (24, 16), (0, 0, 0, 0))
+        for y in range(16):
+            clear.putpixel((8, y), (0, 0, 0, 255))
+        lifted = extract_lines(clear, 0.5)
+        self.assertEqual(sample(lifted, 8, 8)[3], 255)
+        self.assertEqual(sample(lifted, 2, 2)[3], 0)
+
+        calls = {"n": 0}
+        original = self.studio.client.imagine
+
+        def imagine(*args, **kwargs):
+            calls["n"] += 1
+            return original(*args, **kwargs)
+
+        self.studio.client.imagine = imagine
+        created = self.studio.project_create({"title": "Ink", "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        chapter = self.studio.chapter_create({"projectId": project_id})["tree"]["chapters"][0]
+        made = self.studio.page_create({"chapterId": chapter["id"], "layout": "full"})
+        page = made["tree"]["chapters"][0]["pages"][-1]
+        panel_id = page["panels"][0]["id"]
+        with self.assertRaises(ValueError):
+            self.studio.panel_lines({"id": panel_id})
+        source = Path(self.tmp.name) / "scan.png"
+        art.save(source)
+        with self.assertRaises(ValueError):
+            self.studio.panel_lines({"id": panel_id, "path": str(Path(self.tmp.name) / "missing.png")})
+        notes = Path(self.tmp.name) / "notes.txt"
+        notes.write_text("not a picture", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            self.studio.panel_lines({"id": panel_id, "path": str(notes)})
+        outside = Path("/etc/passwd")
+        if outside.is_file():
+            with self.assertRaises(ValueError):
+                self.studio.panel_lines({"id": panel_id, "path": str(outside)})
+
+        imported = self.studio.panel_lines({"id": panel_id, "path": str(source), "strength": 0.25})
+        row = next(item for item in imported["tree"]["chapters"][0]["pages"] if item["id"] == page["id"])
+        self.assertTrue(row["panels"][0]["imageUrl"])
+        stored = self.store.get_panel(panel_id)
+        before = Path(stored["image_path"]).read_bytes()
+        with Image.open(io.BytesIO(before)) as opened:
+            self.assertEqual(opened.mode, "RGBA")
+            self.assertEqual(opened.getpixel((4, 20))[3], 0)
+            self.assertEqual(opened.getpixel((14, 20))[3], 255)
+            self.assertEqual(opened.getpixel((28, 20))[3], 0)
+        self.assertEqual(self.store.list_versions(panel_id)[0]["note"], "Lines")
+
+        self.studio.panel_lines({"id": panel_id, "path": str(source), "strength": 0.85})
+        after = Path(self.store.get_panel(panel_id)["image_path"]).read_bytes()
+        self.assertNotEqual(after, before)
+        with Image.open(io.BytesIO(after)) as opened:
+            self.assertGreater(opened.getpixel((28, 20))[3], 200)
+        self.studio.page_undo({"pageId": page["id"]})
+        restored = Path(self.store.get_panel(panel_id)["image_path"]).read_bytes()
+        self.assertEqual(restored, before)
+        self.assertEqual(calls["n"], 0)
+
+        sheet = Path(self.tmp.name) / "sheet.png"
+        render_page(
+            "full",
+            "ltr",
+            [{"slot": 0, "image_path": self.store.get_panel(panel_id)["image_path"], "dialogue": "", "balloon": "none", "balloon_anchor": "tr", "sfx": ""}],
+            "1",
+            sheet,
+            width=180,
+            height=260,
+        )
+        with Image.open(sheet) as page_image:
+            small = page_image.convert("RGB").resize((36, 52))
+            pixels = [small.getpixel((x, y)) for y in range(52) for x in range(36)]
+        dark = sum(1 for pixel in pixels if pixel[0] < 40 and pixel[1] < 40 and pixel[2] < 40)
+        paper = sum(1 for pixel in pixels if pixel[0] > 230 and pixel[1] > 230 and pixel[2] > 230)
+        self.assertGreater(dark, 0)
+        self.assertGreater(paper, dark)
+
+        root = Path(__file__).resolve().parents[1]
+        app = (root / "ui" / "app.js").read_text(encoding="utf-8")
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        self.assertIn('["lines", "Lines"]', app)
+        self.assertIn('data-act="extract-lines"', app)
+        self.assertIn('rpc("panel.lines"', app)
+        self.assertIn('"1234567"', app)
+        self.assertIn("black line art", readme)
 
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
