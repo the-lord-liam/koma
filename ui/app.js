@@ -1108,6 +1108,7 @@ function characterStage(person) {
 }
 
 function characterMesh(person) {
+  if (window.applyStoredOutline) applyStoredOutline(person && person.id);
   const meshes = person.meshes || [];
   if (state.meshId && !meshes.some((mesh) => mesh.id === state.meshId)) state.meshId = null;
   const current = meshes.find((mesh) => mesh.id === state.meshId) || meshes[0] || null;
@@ -1134,7 +1135,7 @@ function characterMesh(person) {
         <span class="meta">${esc(meta)}</span>
       </div>
       <div class="mesh-view ${current ? "" : "empty"}">
-        ${current ? `<canvas data-mesh-id="${esc(current.id)}" data-mesh-url="${esc(current.url)}" data-has-thumb="${current.thumb ? "1" : ""}" width="640" height="360" aria-label="3D model of ${esc(person.name)}"></canvas>` : `<p class="mesh-empty">Generate a model, or import a GLB, VRM, or OBJ file.</p>`}
+        ${current ? `<canvas data-mesh-id="${esc(current.id)}" data-character-id="${esc(person.id)}" data-mesh-url="${esc(current.url)}" data-has-thumb="${current.thumb ? "1" : ""}" width="640" height="360" aria-label="3D model of ${esc(person.name)}"></canvas>` : `<p class="mesh-empty">Generate a model, or import a GLB, VRM, or OBJ file.</p>`}
         <p class="mesh-note"></p>
       </div>
       ${current ? `<div class="mesh-side"><p class="meta">Drag to orbit any way. Shift-drag pans. Alt-drag rolls. Scroll zooms.</p>
@@ -3052,8 +3053,8 @@ const actions = {
     })();
   },
   "mesh-reset"() {
-    if (window.resetMeshCamera) resetMeshCamera();
     const canvas = document.querySelector("canvas[data-mesh-id]");
+    if (window.resetMeshCamera) resetMeshCamera(canvas && canvas._geom);
     if (canvas && window.redraw) redraw(canvas);
   },
   "mesh-auto"() {
@@ -3073,7 +3074,10 @@ const actions = {
     paintMeshChrome();
   },
   "mesh-outline"() {
-    meshCamera.outline = !meshCamera.outline;
+    const canvas = document.querySelector("canvas[data-mesh-id]");
+    const characterId = (canvas && canvas.dataset.characterId) || meshCamera.characterId || "";
+    if (window.rememberOutline) rememberOutline(characterId, !meshCamera.outline);
+    else meshCamera.outline = !meshCamera.outline;
     paintMeshChrome();
   },
   "mesh-ground"() {

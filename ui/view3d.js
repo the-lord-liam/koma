@@ -541,6 +541,7 @@ const meshCamera = window.meshCamera = {
   large: false,
   grid: false,
   outline: false,
+  characterId: "",
   backdrop: "dark",
   shape: "",
   shapeNames: [],
@@ -584,6 +585,29 @@ function resetMeshCamera(geom) {
   meshCamera.angle = geom && geom.humanoid ? "three" : "";
 }
 
+function storedOutline(characterId) {
+  const id = String(characterId || "");
+  if (!id) return false;
+  try { return localStorage.getItem("koma-outline:" + id) === "1"; }
+  catch (_error) { return false; }
+}
+
+function rememberOutline(characterId, on) {
+  meshCamera.outline = Boolean(on);
+  const id = String(characterId || "");
+  if (!id) return;
+  meshCamera.characterId = id;
+  try { localStorage.setItem("koma-outline:" + id, on ? "1" : "0"); }
+  catch (_error) { /* The choice still applies for this visit. */ }
+}
+
+function applyStoredOutline(characterId) {
+  const id = String(characterId || "");
+  if (!id || meshCamera.characterId === id) return;
+  meshCamera.characterId = id;
+  meshCamera.outline = storedOutline(id);
+}
+
 function meshFlags() {
   return {
     auto: meshCamera.auto,
@@ -603,6 +627,7 @@ function meshFlags() {
 
 function showMesh(canvas, geom) {
   const id = canvas.dataset.meshId || "";
+  applyStoredOutline(canvas.dataset.characterId || "");
   if (meshCamera.meshId !== id) {
     meshCamera.shape = "";
     meshCamera.angle = "";
@@ -2504,7 +2529,8 @@ function installAnimationClips(clips) {
   meshCamera.time = 0;
   meshCamera.playing = false;
   applyClipFrame(geom);
-  if (canvas) redraw(canvas);
+  publishMeshUi(geom);
+  if (canvas && canvas.isConnected) redraw(canvas);
   return imported.length;
 }
 
@@ -2657,6 +2683,8 @@ window.meshPoseInfo = meshPoseInfo;
 window.sampleChannel = sampleChannel;
 window.applyClipFrame = applyClipFrame;
 window.installAnimationClips = installAnimationClips;
+window.rememberOutline = rememberOutline;
+window.applyStoredOutline = applyStoredOutline;
 window.posedExportPayload = posedExportPayload;
 window.meshAnimInfo = meshAnimInfo;
 
