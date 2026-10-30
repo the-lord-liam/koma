@@ -1283,12 +1283,14 @@ body[data-studio="1"] .settings { background: var(--ink); }
 .about-foot {
   margin-top: auto;
   display: flex;
-  align-items: center;
+  align-items: flex-end;
   justify-content: space-between;
   gap: 16px;
   padding-top: 40px;
 }
-.about-foot p { margin: 0; color: var(--muted); font-size: 14px; }
+.about-credit { min-width: 0; flex: 1; }
+.about-foot .about-kicker { margin: 0 0 8px; font-size: 12px; }
+.about-foot p { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.45; }
 .x-link {
   width: 40px;
   height: 40px;

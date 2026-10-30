@@ -4,7 +4,9 @@
 
 Koma is also a concept: an idea of what a free, local, AI-powered manga and illustration studio could be.
 
-Contact the creator <a href="https://x.com/the_lord_liam"><img src="docs/x-icon.png" width="22" height="22" alt="X"></a>
+## Credits
+
+Koma was built by <a href="https://x.com/the_lord_liam">Liam</a> together with Grok Bot, an AI teammate that did a lot of the building, and Grok (Grok Build). <a href="https://x.com/the_lord_liam"><img src="docs/x-icon.png" width="22" height="22" alt="X"></a>
 
 Koma is a local manga studio for Ubuntu. It keeps the book, the drawings, and the API key on your machine. Home shows two canvases: a manga page, and a separate illustration. The manga side plans a series, keeps character designs locked to reference art, draws one panel at a time, letters the page in the app, and exports chapters. The illustration side is one picture, with no panels.
 
