@@ -13,6 +13,7 @@ from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
 from koma.layouts import place, slots_for
+from koma.media import flatten_on_white
 
 PAGE_W = 1200
 PAGE_H = 1800
@@ -213,7 +214,7 @@ def _paste_art(page: Image.Image, box, path: str | None, number: int, label_font
     if path and Path(path).exists():
         try:
             with Image.open(path) as art:
-                art = art.convert("RGB")
+                art = flatten_on_white(art)
                 scale = max(w / art.width, h / art.height)
                 resized = art.resize(
                     (max(1, round(art.width * scale)), max(1, round(art.height * scale))),
