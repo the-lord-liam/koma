@@ -2710,8 +2710,62 @@ process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: O
         self.assertIn('["lines", "Lines"]', app)
         self.assertIn('data-act="extract-lines"', app)
         self.assertIn('rpc("panel.lines"', app)
-        self.assertIn('"1234567"', app)
+        self.assertIn('"12345678"', app)
         self.assertIn("black line art", readme)
+
+    def _fresh_panel(self, title="Page"):
+        created = self.studio.project_create({"title": title, "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        chapter = self.studio.chapter_create({"projectId": project_id})["tree"]["chapters"][0]
+        made = self.studio.page_create({"chapterId": chapter["id"], "layout": "full"})
+        page = made["tree"]["chapters"][0]["pages"][-1]
+        return page, page["panels"][0]["id"]
+
+    def test_draw_preview_cleans_lines_or_asks_for_a_picture(self):
+        import base64
+
+        from koma.config import save_config
+        from koma.service import ROUTES
+
+        self.assertIn("panel.draw_live", ROUTES)
+        _page, panel_id = self._fresh_panel("Draw")
+        art = Image.new("RGB", (48, 64), (255, 255, 255))
+        for y in range(8, 56):
+            art.putpixel((16, y), (0, 0, 0))
+            art.putpixel((17, y), (0, 0, 0))
+        buffer = io.BytesIO()
+        art.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        saved = os.environ.pop("XAI_API_KEY", None)
+        calls = {"n": 0}
+        original = self.studio.client.imagine
+        try:
+            def imagine(*args, **kwargs):
+                calls["n"] += 1
+                return original(*args, **kwargs)
+
+            self.studio.client.imagine = imagine
+            local = self.studio.panel_draw_live({"id": panel_id, "png": encoded})
+            self.assertEqual(local["source"], "lines")
+            self.assertEqual(calls["n"], 0)
+            with Image.open(io.BytesIO(base64.b64decode(local["png"]))) as opened:
+                self.assertEqual(opened.getpixel((2, 2))[:3], (255, 255, 255))
+                self.assertLess(opened.getpixel((16, 30))[0], 40)
+            save_config({"api_key": "test-key"})
+            drawn = self.studio.panel_draw_live({"id": panel_id, "png": encoded})
+            self.assertEqual(drawn["source"], "ai")
+            self.assertEqual(calls["n"], 1)
+            with Image.open(io.BytesIO(base64.b64decode(drawn["png"]))) as opened:
+                self.assertEqual(opened.getpixel((0, 0)), (180, 30, 30))
+            with self.assertRaises(ValueError):
+                self.studio.panel_draw_live({"id": panel_id, "png": "not-a-png"})
+        finally:
+            if saved is not None:
+                os.environ["XAI_API_KEY"] = saved
+        app = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('["draw", "Draw"]', app)
+        self.assertIn('class="draw-pair"', app)
+        self.assertIn('rpc("panel.draw_live"', app)
 
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
