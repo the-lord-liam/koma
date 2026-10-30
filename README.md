@@ -122,10 +122,10 @@ Rest, Joy, and Surprised, still head and shoulders. Joy narrows the eyes and lif
 
 Pose mode bends a rigged GLB or VRM. Pick a bone in the list, grouped by body part, or click it on the model, then drag the red, green, and blue handles or move the X, Y, and Z sliders. The Fingers slider curls both hands from open to a fist. Show bones turns those markers and handles off when you want a clean view. It starts on. T / A pose puts back the bind pose stored in the file, which is a T-pose or an A-pose depending on how the model was rigged. Standing, walking, running, a running mid-stride, sitting, kneeling, crouching, pointing, a wave, arms crossed, and fighting stance aim the limbs. Wave keeps the head level and the raised hand beside it. Kneeling, crouching, and the mid-stride plant the lower foot on the floor. VRM files use the humanoid bone map. A rig without that map is matched from bone names such as `LeftUpperArm` or `mixamorig:LeftArm`. Save pose stores the bone rotations and the current expression in the library under that character. Load puts them back. Nothing about posing is uploaded.
 
-Standing and fighting on Sendagaya Shino, from a three-quarter front, with the floor and lighting on. Standing hangs the arms. Fighting holds both fists in front of the chest, elbows bent, one foot forward, face clear.
+Standing on Sendagaya Shino, from a three-quarter front, with the floor and lighting on. The arms hang down.
 
 <p align="center">
-  <img src="docs/3d-pose-grid.png" width="900" alt="Sendagaya Shino standing with arms down, and in a fighting stance, each pose labeled">
+  <img src="docs/3d-pose-grid.png" width="450" alt="Sendagaya Shino standing with arms down">
 </p>
 
 ### Animation
