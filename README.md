@@ -21,7 +21,7 @@ cd koma && bin/koma
 
 ## What's inside
 
-- **Story:** plan title â†’ volumes â†’ chapters â†’ pages from one idea, or write it yourself.
+- **Story:** plan title, volumes, chapters, and pages from one idea, or write it yourself.
 - **Cast:** draw a portrait once, faces stay on-model after.
 - **Places:** draw or import backgrounds, attach to panels.
 - **3D:** build or import GLB/VRM/OBJ, pose it, add expressions, spin a turntable.
