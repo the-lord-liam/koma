@@ -17,8 +17,11 @@ Koma is a local manga studio for Ubuntu. It keeps the book, the drawings, and th
 - **Pose and expressions:** bends the model, adds faces and preset poses, and saves the result.
 - **Turntable and animation:** plays clips and exports spinning GIFs or PNGs.
 - **Pages:** picks a layout and draws each panel, keeping each scene consistent with the panel before it.
+- **Storyboard:** shows every page in a chapter as a small thumbnail. Drag reorders them. Click opens the page.
 - **Draw:** turns your sketch into live AI art, with Tab for a full split screen and support for xAI, a local model, or offline mode.
 - **Lines:** pulls clean line art out of a picture, without uploading it.
+- **Tone:** lays dot, line, or gradient screentone on a panel or a circled area, on this machine.
+- **Color:** colors line art from a short note and keeps the ink, with the same xAI, local, or offline path as Draw.
 - **Lasso:** redraws just the part of a panel you circle.
 - **Select:** moves and resizes balloons and objects.
 - **Text:** suggests editable speech bubbles with AI.
@@ -146,7 +149,7 @@ Settings picks the preview. **Automatic** uses xAI when a key is saved, otherwis
 
 ### Read and export
 
-**Read** shows a chapter as finished pages, two at a time. **Earlier** and **Later**, or the left and right arrow keys, turn the page. A right-to-left book puts the later page on the left. Click a page to edit it. **Chapter PDF** uses the book's finish size. **Chapter CBZ** packs the same pages. **Export page** writes that page as a PNG. Files land in `~/Documents/Koma/<title>/`, one folder per title. **Draw empty panels** here fills the blank panels in the whole chapter. **Refresh** reloads the spreads.
+**Read** shows a chapter as finished pages, two at a time. It follows the book, which starts right to left, and **Right to left** toggles the direction. In a right-to-left book the later page sits on the left. Click or tap the left side for the next page and the right side for the previous page. A right-click also goes to the next page. The arrow keys follow those same sides. A counter shows where you are. The page turns with a short slide, and the spread does not scroll. **Edit page** opens that page. **Earlier** and **Later** still step through the chapter. **Chapter PDF** uses the book's finish size. **Chapter CBZ** packs the same pages. **Export page** writes that page as a PNG. Files land in `~/Documents/Koma/<title>/`, one folder per title. **Draw empty panels** here fills the blank panels in the whole chapter. **Refresh** reloads the spreads.
 
 ### Illustration
 

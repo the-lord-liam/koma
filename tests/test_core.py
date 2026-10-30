@@ -3125,6 +3125,202 @@ process.stdout.write(JSON.stringify({
             if saved_key is not None:
                 os.environ["XAI_API_KEY"] = saved_key
 
+    def test_tone_color_reader_and_storyboard(self) -> None:
+        import base64
+
+        from koma.coloring import color_offline, wash_color
+        from koma.config import save_config
+        from koma.service import ROUTES
+        from koma.tones import apply_tone
+
+        art = Image.new("RGB", (48, 36), (255, 255, 255))
+        for y in range(36):
+            for x in range(2, 8):
+                art.putpixel((x, y), (0, 0, 0))
+
+        def inked(image: Image.Image) -> int:
+            count = 0
+            for y in range(image.height):
+                for x in range(8, image.width):
+                    if image.getpixel((x, y)) != (255, 255, 255):
+                        count += 1
+            return count
+
+        light = apply_tone(art, "dot", 0.15, 0.8)
+        heavy = apply_tone(art, "dot", 0.95, 0.15)
+        self.assertEqual(light.getpixel((4, 10)), (0, 0, 0))
+        self.assertGreater(inked(heavy), inked(light))
+        self.assertGreater(inked(light), 0)
+        self.assertTrue(any(light.getpixel((x, y)) == (255, 255, 255) for y in range(36) for x in range(48)))
+        ruled = apply_tone(art, "line", 0.4, 0.5)
+        self.assertNotEqual(ruled.getpixel((20, 0)), (255, 255, 255))
+        self.assertEqual(ruled.getpixel((4, 0)), (0, 0, 0))
+        fade = apply_tone(art, "gradient", 0.8, 1)
+        self.assertGreater(sum(fade.getpixel((20, 2))), sum(fade.getpixel((20, 33))))
+        self.assertEqual(fade.getpixel((4, 33)), (0, 0, 0))
+        kept = apply_tone(art, "nope", 0.8, 0.3)
+        self.assertEqual(kept.getpixel((4, 8)), (0, 0, 0))
+        masked = apply_tone(
+            art,
+            "dot",
+            0.9,
+            0.2,
+            __import__("koma.ink", fromlist=["mask_from_marks"]).mask_from_marks(
+                art.size,
+                [(0, 0), (0.4, 0), (0.4, 1), (0, 1)],
+                "select",
+            ),
+        )
+        self.assertEqual(masked.getpixel((40, 18)), (255, 255, 255))
+        self.assertTrue(any(masked.getpixel((x, y)) != (255, 255, 255) for y in range(36) for x in range(10, 18)))
+        for image in (light, heavy, ruled, fade, kept, masked):
+            image.close()
+
+        self.assertEqual(wash_color("a blue coat"), (64, 112, 196))
+        colored = color_offline(art, "a blue coat")
+        self.assertEqual(colored.getpixel((4, 10)), (0, 0, 0))
+        self.assertEqual(colored.getpixel((30, 10)), (64, 112, 196))
+        colored.close()
+
+        page, panel_id = self._fresh_panel("Tone")
+        with self.assertRaises(ValueError):
+            self.studio.panel_tone({"id": panel_id})
+        with self.assertRaises(ValueError):
+            self.studio.panel_color({"id": panel_id, "prompt": "blue"})
+        buffer = io.BytesIO()
+        art.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        self.studio.panel_draw_commit({"id": panel_id, "png": encoded})
+        calls = {"n": 0}
+        original = self.studio.client.imagine
+
+        def imagine(*args, **kwargs):
+            calls["n"] += 1
+            return original(*args, **kwargs)
+
+        self.studio.client.imagine = imagine
+        toned = self.studio.panel_tone({"id": panel_id, "kind": "dot", "density": 0.8, "size": 0.3})
+        self.assertEqual(toned["source"], "lines")
+        self.assertEqual(calls["n"], 0)
+        self.assertIn("Tone", [item["note"] for item in self.store.list_versions(panel_id)])
+        with Image.open(self.store.get_panel(panel_id)["image_path"]) as opened:
+            self.assertEqual(opened.getpixel((4, 10)), (0, 0, 0))
+        with self.assertRaises(ValueError):
+            self.studio.panel_tone({"id": panel_id, "path": [{"x": 0.1, "y": 0.1}]})
+        area = self.studio.panel_tone({
+            "id": panel_id,
+            "kind": "line",
+            "density": 0.7,
+            "size": 0.4,
+            "mode": "select",
+            "path": [{"x": 0, "y": 0}, {"x": 0.5, "y": 0}, {"x": 0.5, "y": 1}, {"x": 0, "y": 1}],
+        })
+        self.assertEqual(area["source"], "lines")
+        self.assertEqual(calls["n"], 0)
+        self.studio.panel_draw_commit({"id": panel_id, "png": encoded})
+
+        save_config({"draw_backend": "lines"})
+        washed = self.studio.panel_color({"id": panel_id, "prompt": "blue coat"})
+        self.assertEqual(washed["source"], "lines")
+        self.assertEqual(calls["n"], 0)
+        self.assertIn("Color", [item["note"] for item in self.store.list_versions(panel_id)])
+        with Image.open(self.store.get_panel(panel_id)["image_path"]) as opened:
+            self.assertEqual(opened.getpixel((4, 10)), (0, 0, 0))
+            self.assertEqual(opened.getpixel((30, 10))[2], 196)
+        with self.assertRaises(ValueError):
+            self.studio.panel_color({"id": panel_id, "prompt": "   "})
+
+        save_config({"api_key": "test-key", "draw_backend": "auto"})
+        painted = self.studio.panel_color({"id": panel_id, "prompt": "red scarf"})
+        self.assertEqual(painted["source"], "ai")
+        self.assertEqual(calls["n"], 1)
+        with Image.open(self.store.get_panel(panel_id)["image_path"]) as opened:
+            self.assertEqual(opened.getpixel((4, 10)), (0, 0, 0))
+            self.assertEqual(opened.getpixel((30, 10)), (180, 30, 30))
+
+        def transport(url, payload, timeout):
+            image = Image.new("RGB", (24, 32), (20, 180, 40))
+            body = io.BytesIO()
+            image.save(body, format="PNG")
+            encoded_image = base64.b64encode(body.getvalue()).decode("ascii")
+            return json.dumps({"images": [encoded_image]}).encode("utf-8"), "application/json"
+
+        self.studio.client.imagine = lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("imagine"))
+        self.studio._local_transport = transport
+        save_config({"draw_backend": "local", "local_draw_url": "http://127.0.0.1:7860/sdapi/v1/img2img"})
+        local = self.studio.panel_color({"id": panel_id, "prompt": "green leaves"})
+        self.assertEqual(local["source"], "local")
+        with Image.open(self.store.get_panel(panel_id)["image_path"]) as opened:
+            self.assertEqual(opened.getpixel((4, 10)), (0, 0, 0))
+            self.assertEqual(opened.getpixel((30, 10)), (20, 180, 40))
+        self.assertIn("panel.tone", ROUTES)
+        self.assertIn("panel.color", ROUTES)
+
+        root = Path(__file__).resolve().parents[1]
+        app = (root / "ui" / "app.js").read_text(encoding="utf-8")
+        css = (root / "ui" / "app.css").read_text(encoding="utf-8")
+        readme = (root / "README.md").read_text(encoding="utf-8")
+        self.assertIn('["tone", "Tone"]', app)
+        self.assertIn('["color", "Color"]', app)
+        self.assertIn('rpc("panel.tone"', app)
+        self.assertIn('rpc("panel.color"', app)
+        self.assertIn("data-area=\"selection\"", app)
+        self.assertIn("function readKeyDir", app)
+        self.assertIn("function readSideDir", app)
+        self.assertIn('data-act="read-turn"', app)
+        self.assertIn('data-act="read-flip"', app)
+        self.assertIn("data-page-counter", app)
+        self.assertIn('data-storyboard="1"', app)
+        self.assertIn('data-act="toggle-storyboard"', app)
+        self.assertIn("page.reorder", app)
+        self.assertIn('"12345678"', app)
+        self.assertIn("overflow: hidden", css)
+        self.assertIn("turn-next", css)
+        self.assertIn("Tone:", readme)
+        self.assertIn("Color:", readme)
+        self.assertIn("Storyboard:", readme)
+        self.assertIn("free and open source", readme)
+
+        def js_function(source: str, name: str) -> str:
+            marker = f"function {name}("
+            start = source.index(marker)
+            brace = source.index("{", start)
+            depth = 0
+            for index in range(brace, len(source)):
+                if source[index] == "{":
+                    depth += 1
+                elif source[index] == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return source[start:index + 1]
+            raise AssertionError(name)
+
+        script = js_function(app, "readKeyDir") + "\n" + js_function(app, "readSideDir") + r"""
+const got = {
+  leftRtl: readKeyDir("ArrowLeft", true),
+  rightRtl: readKeyDir("ArrowRight", true),
+  leftLtr: readKeyDir("ArrowLeft", false),
+  rightLtr: readKeyDir("ArrowRight", false),
+  sideLeftRtl: readSideDir("left", true),
+  sideRightRtl: readSideDir("right", true),
+  sideLeftLtr: readSideDir("left", false),
+  sideRightLtr: readSideDir("right", false),
+};
+process.stdout.write(JSON.stringify(got));
+"""
+        completed = self._node(script)
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        got = json.loads(completed.stdout)
+        self.assertEqual(got["leftRtl"], 1)
+        self.assertEqual(got["rightRtl"], -1)
+        self.assertEqual(got["leftLtr"], -1)
+        self.assertEqual(got["rightLtr"], 1)
+        self.assertEqual(got["sideLeftRtl"], got["leftRtl"])
+        self.assertEqual(got["sideRightRtl"], got["rightRtl"])
+        self.assertEqual(got["sideLeftLtr"], got["leftLtr"])
+        self.assertEqual(got["sideRightLtr"], got["rightLtr"])
+        self.assertEqual(page["panels"][0]["id"], panel_id)
+
     def test_readme_covers_draw_and_the_page_tools(self):
         root = Path(__file__).resolve().parents[1]
         readme = (root / "README.md").read_text(encoding="utf-8")
