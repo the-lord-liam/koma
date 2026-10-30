@@ -2710,8 +2710,211 @@ process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: O
         self.assertIn('["lines", "Lines"]', app)
         self.assertIn('data-act="extract-lines"', app)
         self.assertIn('rpc("panel.lines"', app)
-        self.assertIn('"1234567"', app)
+        self.assertIn('"12345678"', app)
         self.assertIn("black line art", readme)
+
+    def _fresh_panel(self, title="Page"):
+        created = self.studio.project_create({"title": title, "premise": ""})
+        project_id = created["tree"]["project"]["id"]
+        chapter = self.studio.chapter_create({"projectId": project_id})["tree"]["chapters"][0]
+        made = self.studio.page_create({"chapterId": chapter["id"], "layout": "full"})
+        page = made["tree"]["chapters"][0]["pages"][-1]
+        return page, page["panels"][0]["id"]
+
+    def test_draw_preview_cleans_lines_or_asks_for_a_picture(self):
+        import base64
+
+        from koma.config import save_config
+        from koma.service import ROUTES
+
+        self.assertIn("panel.draw_live", ROUTES)
+        _page, panel_id = self._fresh_panel("Draw")
+        art = Image.new("RGB", (48, 64), (255, 255, 255))
+        for y in range(8, 56):
+            art.putpixel((16, y), (0, 0, 0))
+            art.putpixel((17, y), (0, 0, 0))
+        buffer = io.BytesIO()
+        art.save(buffer, format="PNG")
+        encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
+        saved = os.environ.pop("XAI_API_KEY", None)
+        calls = {"n": 0}
+        original = self.studio.client.imagine
+        try:
+            def imagine(*args, **kwargs):
+                calls["n"] += 1
+                return original(*args, **kwargs)
+
+            self.studio.client.imagine = imagine
+            local = self.studio.panel_draw_live({"id": panel_id, "png": encoded})
+            self.assertEqual(local["source"], "lines")
+            self.assertEqual(calls["n"], 0)
+            with Image.open(io.BytesIO(base64.b64decode(local["png"]))) as opened:
+                self.assertEqual(opened.getpixel((2, 2))[:3], (255, 255, 255))
+                self.assertLess(opened.getpixel((16, 30))[0], 40)
+            save_config({"api_key": "test-key"})
+            drawn = self.studio.panel_draw_live({"id": panel_id, "png": encoded})
+            self.assertEqual(drawn["source"], "ai")
+            self.assertEqual(calls["n"], 1)
+            with Image.open(io.BytesIO(base64.b64decode(drawn["png"]))) as opened:
+                self.assertEqual(opened.getpixel((0, 0)), (180, 30, 30))
+            with self.assertRaises(ValueError):
+                self.studio.panel_draw_live({"id": panel_id, "png": "not-a-png"})
+        finally:
+            if saved is not None:
+                os.environ["XAI_API_KEY"] = saved
+        app = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('["draw", "Draw"]', app)
+        self.assertIn('class="draw-pair"', app)
+        self.assertIn('rpc("panel.draw_live"', app)
+
+    def test_lasso_redraws_the_marked_region(self):
+        from koma.config import save_config
+        from koma.media import save_image
+        from koma.service import ROUTES
+
+        self.assertIn("panel.lasso", ROUTES)
+        _page, panel_id = self._fresh_panel("Lasso")
+        art = Image.new("RGB", (48, 32), (255, 255, 255))
+        for y in range(32):
+            for x in range(24):
+                art.putpixel((x, y), (0, 0, 0))
+        buffer = io.BytesIO()
+        art.save(buffer, format="PNG")
+        self.store.add_version(panel_id, str(save_image(buffer.getvalue())), "", "Drawn")
+        marks = [
+            {"x": 0.55, "y": 0.0},
+            {"x": 1, "y": 0.0},
+            {"x": 1, "y": 1},
+            {"x": 0.55, "y": 1},
+        ]
+        saved = os.environ.pop("XAI_API_KEY", None)
+        calls = {"n": 0}
+        original = self.studio.client.imagine
+        try:
+            def imagine(*args, **kwargs):
+                calls["n"] += 1
+                return original(*args, **kwargs)
+
+            self.studio.client.imagine = imagine
+            with self.assertRaises(ValueError):
+                self.studio.panel_lasso({"id": panel_id, "path": [{"x": 0.2, "y": 0.2}], "mode": "select"})
+            local = self.studio.panel_lasso({"id": panel_id, "path": marks, "mode": "select"})
+            self.assertEqual(local["source"], "lines")
+            self.assertEqual(calls["n"], 0)
+            self.assertIn("Lasso", [item["note"] for item in self.store.list_versions(panel_id)])
+            with Image.open(self.store.get_panel(panel_id)["image_path"]) as opened:
+                self.assertEqual(opened.getpixel((2, 16)), (0, 0, 0))
+                self.assertLess(opened.getpixel((30, 16))[0], 250)
+            save_config({"api_key": "test-key"})
+            drawn = self.studio.panel_lasso({"id": panel_id, "path": marks, "mode": "select"})
+            self.assertEqual(drawn["source"], "ai")
+            self.assertEqual(calls["n"], 1)
+            with Image.open(self.store.get_panel(panel_id)["image_path"]) as opened:
+                self.assertEqual(opened.getpixel((2, 16)), (0, 0, 0))
+                self.assertEqual(opened.getpixel((40, 16)), (180, 30, 30))
+        finally:
+            if saved is not None:
+                os.environ["XAI_API_KEY"] = saved
+        app = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn('rpc("panel.lasso"', app)
+
+    def _panel_row(self, packed, page_id):
+        page = next(item for item in packed["tree"]["chapters"][0]["pages"] if item["id"] == page_id)
+        return page["panels"][0]
+
+    def test_elements_can_be_moved_and_resized(self):
+        from koma.service import ROUTES
+
+        self.assertIn("panel.arrange", ROUTES)
+        page, panel_id = self._fresh_panel("Select")
+        with self.assertRaises(ValueError):
+            self.studio.panel_arrange({"id": panel_id})
+        self.studio.panel_update({"id": panel_id, "dialogue": "Look.", "objects": ["lantern"]})
+        arranged = self.studio.panel_arrange({"id": panel_id})
+        elements = self._panel_row(arranged, page["id"])["elements"]
+        self.assertEqual({item["kind"] for item in elements}, {"balloon", "thing"})
+        moved = self.studio.panel_update(
+            {
+                "id": panel_id,
+                "elements": [
+                    {"id": "line", "kind": "balloon", "text": "Look.", "balloon": "round", "x": 0.2, "y": 0.3, "w": 0.5, "h": 0.24},
+                    {"id": "thing-1", "kind": "thing", "text": "lantern", "x": -1, "y": 0.1, "w": 4, "h": 0.2},
+                ],
+            }
+        )
+        rows = {item["id"]: item for item in self._panel_row(moved, page["id"])["elements"]}
+        self.assertEqual(rows["line"]["x"], 0.2)
+        self.assertEqual(rows["line"]["w"], 0.5)
+        self.assertEqual(rows["thing-1"]["text"], "lantern")
+        self.assertEqual(rows["thing-1"]["x"], 0.0)
+        self.assertEqual(rows["thing-1"]["w"], 1.0)
+        copied = self.studio.page_duplicate({"pageId": page["id"]})
+        copy = next(item for item in copied["tree"]["chapters"][0]["pages"] if item["id"] == copied["pageId"])
+        self.assertEqual(copy["panels"][0]["elements"][0]["text"], "Look.")
+        cleared = self.studio.panel_update({"id": panel_id, "elements": "nope"})
+        self.assertEqual(self._panel_row(cleared, page["id"])["elements"], [])
+        app = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("element-layer", app)
+        self.assertIn('data-pen="el-resize"', app)
+        self.assertIn('data-act="arrange-elements"', app)
+
+    def test_balloons_come_from_notes_or_the_model(self):
+        import json as payload
+
+        from koma.config import save_config
+
+        page, panel_id = self._fresh_panel("Letter")
+        self.studio.page_update({"id": page["id"], "notes": "The runner stops. The pier is quiet."})
+        self.studio.panel_update({"id": panel_id, "action": "Aki looks back"})
+        saved = os.environ.pop("XAI_API_KEY", None)
+        calls = {"n": 0}
+        original = self.studio.client.complete
+
+        class BalloonClient(FakeClient):
+            def complete(self, messages, model=None):
+                calls["n"] += 1
+                return payload.dumps(
+                    {"balloons": [{"dialogue": "Wait for me.", "balloon": "shout", "anchor": "bl"}]}
+                )
+
+        try:
+            def complete(messages, model=None):
+                calls["n"] += 1
+                return original(messages, model)
+
+            self.studio.client.complete = complete
+            local = self.studio.panel_letter({"id": panel_id})
+            self.assertEqual(local["source"], "template")
+            self.assertEqual(calls["n"], 0)
+            row = self._panel_row(local, page["id"])
+            self.assertIn("runner stops", row["dialogue"])
+            balloons = [item for item in row["elements"] if item["kind"] == "balloon"]
+            self.assertGreaterEqual(len(balloons), 2)
+            edited = [dict(item) for item in row["elements"]]
+            edited[0]["text"] = "Hold on."
+            changed = self.studio.panel_update(
+                {"id": panel_id, "elements": edited, "dialogue": "Hold on."}
+            )
+            self.assertEqual(self._panel_row(changed, page["id"])["dialogue"], "Hold on.")
+            self.assertEqual(self._panel_row(changed, page["id"])["elements"][0]["text"], "Hold on.")
+            quiet_page, quiet_id = self._fresh_panel("Quiet")
+            quiet = self.studio.panel_letter({"id": quiet_id})
+            self.assertEqual(self._panel_row(quiet, quiet_page["id"])["dialogue"], "What happens in this panel?")
+            self.studio.client = BalloonClient()
+            save_config({"api_key": "test-key"})
+            spoken = self.studio.panel_letter({"id": panel_id})
+            self.assertEqual(spoken["source"], "ai")
+            self.assertGreaterEqual(calls["n"], 1)
+            heard = self._panel_row(spoken, page["id"])
+            self.assertEqual(heard["dialogue"], "Wait for me.")
+            self.assertEqual(heard["balloon"], "shout")
+            self.assertEqual(heard["balloonAnchor"], "bl")
+        finally:
+            if saved is not None:
+                os.environ["XAI_API_KEY"] = saved
+        app = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("AI text bubbles", app)
+        self.assertIn("panel notes", app)
 
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
