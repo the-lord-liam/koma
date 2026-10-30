@@ -57,6 +57,7 @@ const state = {
   sketchPreview: "",
   drawSketch: "",
   drawPreview: "",
+  drawFull: false,
   lassoPath: [],
   botMessages: [],
   botDraft: "",
@@ -208,6 +209,9 @@ function panelHasWork(panel) {
 }
 
 function render() {
+  if (state.drawFull && (state.view !== "pages" || state.pageTool !== "draw" || !state.panelId)) {
+    commitDrawFull();
+  }
   const active = document.activeElement;
   let keep = null;
   if (active && active.dataset && active.dataset.save && active.dataset.field) {
@@ -287,6 +291,7 @@ function paintHelp() {
         <li><kbd>?</kbd> Show or hide this list</li>
         <li><kbd>R</kbd> Open the reference board for this book</li>
         <li><kbd>1</kbd>–<kbd>8</kbd> Lasso, Select, Text, Sketch, Effects, Imagine, Lines, Draw</li>
+        <li><kbd>Tab</kbd> Full-window Draw. Tab or Esc saves and returns</li>
         <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> Undo a page edit</li>
         <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> Redo</li>
         <li><kbd>[</kbd> <kbd>]</kbd> Move the selected panel earlier or later</li>
@@ -866,6 +871,22 @@ function renderSettings() {
         <button type="button" class="primary" data-act="save-key">Save key</button>
         <button type="button" class="danger" data-act="clear-key">Remove key</button>
       </div>
+      <h2>Draw</h2>
+      <p class="lede">Automatic uses xAI when a key is saved, then a draw server on this machine, then cleaned lines. The sketch is posted only to the local address you set, and only when that address is on this machine. Nothing else is added to that request.</p>
+      <label class="field">Draw backend
+        <select data-save="settings" data-field="drawBackend" data-entity="">
+          ${[
+            ["auto", "Automatic"],
+            ["xai", "xAI"],
+            ["local", "Local server"],
+            ["lines", "Cleaned lines"],
+          ].map(([id, label]) => `<option value="${id}" ${id === (settings.drawBackend || "auto") ? "selected" : ""}>${label}</option>`).join("")}
+        </select>
+      </label>
+      <label class="field">Local draw address
+        <input type="text" data-save="settings" data-field="localDrawUrl" data-entity="" value="${esc(settings.localDrawUrl || "")}" placeholder="http://127.0.0.1:7860" autocomplete="off">
+      </label>
+      <p class="meta">Img2img on localhost, 127.0.0.1, or ::1. A Stable Diffusion WebUI path works. ComfyUI or another local server can answer the same JSON. No telemetry.</p>
       <p class="meta">1k is the cheaper size while you iterate. 2k is for finished pages. Low quality is cheaper; medium keeps more detail. Auto lets xAI choose.</p>
       <label class="field">Resolution
         <select data-save="settings" data-field="resolution" data-entity="">
@@ -1641,7 +1662,7 @@ function renderPages() {
   const stage = row
     ? pageStage(row, project)
     : `<div class="stage"><div class="empty">Add a chapter and a page when you are ready to draw. Press ? for the page shortcuts.</div></div>`;
-  return desk(rail, stage, toolDock(row ? row.page : null, row ? currentPanel() : null), "rail-tools");
+  return desk(rail, stage, toolDock(row ? row.page : null, row ? currentPanel() : null), "rail-tools") + drawFullLayer();
 }
 
 function pageRatio(project) {
@@ -1944,15 +1965,40 @@ function textProps(panel) {
   `;
 }
 
-function drawProps(panel) {
+function drawFullOpen() {
+  return !!(state.drawFull && state.view === "pages" && state.pageTool === "draw" && state.panelId);
+}
+
+function drawPair() {
   return `
-    <p class="rail-kicker">Draw</p>
-    <p class="meta">Panel ${panel.slot + 1}. Sketch on the left. The preview on the right updates as you draw.</p>
     <div class="draw-pair">
       <canvas class="draw-sketch gesture" data-pen="draw" width="320" height="480" aria-label="Sketch"></canvas>
       <canvas class="draw-preview" width="320" height="480" aria-label="Live preview"></canvas>
     </div>
-    <p class="meta">With a key, the preview is a drawing. Without one, it is cleaned-up line art on this machine.</p>
+  `;
+}
+
+function drawFullLayer() {
+  if (!drawFullOpen()) return "";
+  return `
+    <div id="draw-full" class="draw-full">
+      <div class="draw-full-bar">
+        <p>Draw. Tab or Esc saves this picture and returns to the page.</p>
+      </div>
+      <div class="draw-pair draw-full-pair">
+        <canvas class="draw-sketch gesture" data-pen="draw" width="768" height="1152" aria-label="Sketch"></canvas>
+        <canvas class="draw-preview" width="768" height="1152" aria-label="Live preview"></canvas>
+      </div>
+    </div>
+  `;
+}
+
+function drawProps(panel) {
+  return `
+    <p class="rail-kicker">Draw</p>
+    <p class="meta">Panel ${panel.slot + 1}. Sketch on the left. The preview on the right updates as you draw. Press Tab for a full-window canvas.</p>
+    ${drawFullOpen() ? "" : drawPair()}
+    <p class="meta">With an xAI key, the preview is a drawing. A local address in Settings can draw it on this machine. Otherwise it is cleaned-up line art.</p>
   `;
 }
 
@@ -2546,6 +2592,7 @@ const actions = {
   },
   nav(button) {
     state.menuOpen = false;
+    if (button.dataset.view !== "pages") commitDrawFull();
     state.view = button.dataset.view;
     if (state.view === "story" && volumes().some((item) => item.id === state.navVolumeId)) {
       state.storyVolumeId = state.navVolumeId;
@@ -2871,13 +2918,16 @@ const actions = {
     });
   },
   "select-panel"(button) {
-    if (state.pageTool === "imagine" && state.panelId === button.dataset.id) {
+    const nextId = button.dataset.id;
+    if (state.pageTool === "imagine" && state.panelId === nextId) {
+      commitDrawFull();
       state.panelId = null;
       render();
       return;
     }
-    const changed = state.panelId !== button.dataset.id;
-    state.panelId = button.dataset.id;
+    const changed = state.panelId !== nextId;
+    if (changed) commitDrawFull();
+    state.panelId = nextId;
     if (changed) state.elementId = null;
     if (changed && state.pageTool !== "imagine" && state.pageTool !== "lines" && state.pageTool !== "draw" && state.pageTool !== "select") {
       state.pageTool = "lasso";
@@ -3602,7 +3652,9 @@ const actions = {
     render();
   },
   "pick-tool"(button) {
-    state.pageTool = button.dataset.tool || "lasso";
+    const next = button.dataset.tool || "lasso";
+    if (next !== "draw") commitDrawFull();
+    state.pageTool = next;
     render();
   },
   "imagine-cast"(button) {
@@ -4042,6 +4094,7 @@ let sketchFlight = null;
 let sketchWait = null;
 let drawTimer = 0;
 let drawToken = 0;
+let drawDirty = false;
 
 function penPoint(host, event) {
   const rect = host.getBoundingClientRect();
@@ -4102,6 +4155,7 @@ function onPenDown(event) {
   pen.host = pen.kind.startsWith("divide") ? (host.closest(".divide-layer") || host) : host;
   pen.last = penPoint(pen.host, event);
   if (pen.kind === "sketch" || pen.kind === "draw") beginSketch(host, event);
+  if (pen.kind === "draw") drawDirty = true;
   if (pen.kind === "lasso") state.lassoPath = [pen.last];
   paintLasso();
 }
@@ -4220,7 +4274,42 @@ function beginSketch(canvas, event) {
   pen.sketch = ctx;
 }
 
+function commitDrawFull() {
+  if (!state.drawFull) return;
+  const sketch = document.querySelector(".draw-sketch");
+  if (sketch && sketch.width) state.drawSketch = sketch.toDataURL("image/png");
+  const png = state.drawPreview || state.drawSketch;
+  const id = state.panelId;
+  const save = drawDirty && !!png && !!id;
+  state.drawFull = false;
+  drawDirty = false;
+  if (!save) return;
+  rpc("panel.draw_commit", { id, png }).then((result) => {
+    absorb(result);
+    toast("Saved the drawing.", "ok");
+    if (pen.kind !== "draw") render();
+  }).catch((error) => toast(error.message));
+}
+
+function exitDrawFull() {
+  commitDrawFull();
+  render();
+}
+
+function toggleDrawFull() {
+  if (state.drawFull) {
+    exitDrawFull();
+    return;
+  }
+  if (state.busy || state.view !== "pages" || state.pageTool !== "draw" || !state.panelId) return;
+  const sketch = document.querySelector(".draw-sketch");
+  if (sketch && sketch.width) state.drawSketch = sketch.toDataURL("image/png");
+  state.drawFull = true;
+  render();
+}
+
 function scheduleDraw() {
+  drawDirty = true;
   mirrorDraw();
   clearTimeout(drawTimer);
   drawTimer = setTimeout(sendDrawPreview, 320);
@@ -4472,6 +4561,20 @@ document.addEventListener("input", (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  const typing = event.target && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA" || event.target.tagName === "SELECT" || event.target.isContentEditable);
+  if (!typing && event.key === "Tab" && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+    const drawing = state.view === "pages" && state.pageTool === "draw" && state.panelId;
+    if (state.drawFull || drawing) {
+      event.preventDefault();
+      toggleDrawFull();
+      return;
+    }
+  }
+  if (!typing && event.key === "Escape" && state.drawFull) {
+    event.preventDefault();
+    exitDrawFull();
+    return;
+  }
   if (event.key === "Escape" && window.meshCamera && meshCamera.large && !state.helpOpen && !state.menuOpen) {
     meshCamera.large = false;
     if (document.fullscreenElement && document.exitFullscreen) document.exitFullscreen().catch(() => {});
@@ -4488,7 +4591,6 @@ document.addEventListener("keydown", (event) => {
     render();
     return;
   }
-  const typing = event.target && (event.target.tagName === "INPUT" || event.target.tagName === "TEXTAREA" || event.target.tagName === "SELECT" || event.target.isContentEditable);
   if (!typing && !state.busy && !event.ctrlKey && !event.metaKey && !event.altKey && event.key.toLowerCase() === "m" && state.view === "cast" && window.meshCamera && meshCamera.poseMode && !(meshCamera.large)) {
     event.preventDefault();
     const act = actions["mesh-mirror"];
