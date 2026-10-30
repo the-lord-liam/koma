@@ -2564,49 +2564,51 @@ class Studio:
         return self._pack(project["id"], things=things, characters=names, background=place_name)
 
     def panel_letter(self, params: dict) -> dict:
-        panel, _page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
-        dialogue = (panel.get("dialogue") or "").strip()
-        balloon = panel.get("balloon") if panel.get("balloon") in BALLOON_IDS else "round"
-        anchor = panel.get("balloon_anchor") if panel.get("balloon_anchor") in ANCHOR_IDS else "tr"
-        applied = False
-        reply, _needs_key = self._complete(
-            [
-                {
-                    "role": "system",
-                    "content": (
-                        "Write one speech balloon for this manga panel. "
-                        'Reply with JSON only: {"dialogue": "...", "balloon": "round|shout|thought|caption|none", "anchor": "tl|tr|bl|br"}. '
-                        "No letters belong in the drawing."
-                    ),
-                },
-                {
-                    "role": "user",
-                    "content": f"Action: {panel.get('action') or ''}. Existing line: {dialogue}.",
-                },
-            ]
-        )
-        parsed = _json_object(reply or "")
-        if parsed and str(parsed.get("dialogue") or "").strip():
-            dialogue = _clip(parsed.get("dialogue"), 2000).strip()
-            if parsed.get("balloon") in BALLOON_IDS:
-                balloon = parsed["balloon"]
-            if parsed.get("anchor") in ANCHOR_IDS:
-                anchor = parsed["anchor"]
-            applied = True
-        if not applied:
-            action = (panel.get("action") or "").strip()
-            if action and not (panel.get("dialogue") or "").strip():
-                dialogue = action.split(".")[0].split(";")[0].strip()[:2000]
-                balloon = "round"
-            elif not action and not (panel.get("dialogue") or "").strip():
-                raise ValueError("Write an action or a line, and Koma can letter the balloon.")
+        panel, page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
+        notes = _panel_notes(panel, page)
+        balloons: list[dict] = []
+        source = "template"
+        if self._has_xai_key():
+            reply, needs_key = self._complete(
+                [
+                    {
+                        "role": "system",
+                        "content": (
+                            "Write up to two speech balloons from the panel notes. "
+                            'Reply with JSON only: {"balloons": [{"dialogue": "...", "balloon": "round|shout|thought|caption", "anchor": "tl|tr|bl|br"}]}. '
+                            "No letters belong in the drawing."
+                        ),
+                    },
+                    {
+                        "role": "user",
+                        "content": f"Notes:\n{notes or '(none)'}\nExisting line: {panel.get('dialogue') or ''}",
+                    },
+                ]
+            )
+            if not needs_key:
+                balloons = _balloons_from_reply(reply or "")
+                if balloons:
+                    source = "ai"
+        if not balloons:
+            balloons = _balloon_template(notes, panel.get("dialogue") or "")
+            source = "template"
+        fresh = _elements_from_balloons(balloons)
+        kept = [item for item in _clean_elements(panel.get("elements")) if item.get("kind") != "balloon"]
+        elements = _clean_elements(fresh + kept)
+        first = balloons[0]
+        self._remember(page["id"])
         self.store.update_panel(
             panel["id"],
-            {"dialogue": dialogue, "balloon": balloon, "balloon_anchor": anchor},
-            {"dialogue", "balloon", "balloon_anchor"},
+            {
+                "dialogue": first["dialogue"],
+                "balloon": first["balloon"],
+                "balloon_anchor": first["anchor"],
+                "elements": json.dumps(elements),
+            },
+            {"dialogue", "balloon", "balloon_anchor", "elements"},
         )
         self.store.touch(project["id"])
-        return self._pack(project["id"])
+        return self._pack(project["id"], source=source)
 
     def _has_xai_key(self) -> bool:
         return bool(str(load_config().get("api_key") or "").strip())
@@ -3112,6 +3114,84 @@ def _page_count(page: dict) -> int:
     if slots:
         return len(slots)
     return _slot_count(page.get("layout") or "")
+
+
+def _panel_notes(panel: dict, page: dict) -> str:
+    bits = [
+        page.get("notes") or "",
+        panel.get("action") or "",
+        panel.get("extra") or "",
+        panel.get("prompt") or "",
+    ]
+    return "\n".join(str(bit).strip() for bit in bits if str(bit).strip())
+
+
+def _balloon_template(notes: str, existing: str = "") -> list[dict]:
+    text = " ".join(str(notes or existing or "").split())
+    parts: list[str] = []
+    if text:
+        for chunk in text.replace("!", ".").replace("?", ".").split("."):
+            bit = " ".join(chunk.split())
+            if bit:
+                parts.append(bit[:180])
+            if len(parts) >= 2:
+                break
+    if not parts:
+        parts = ["What happens in this panel?"]
+    kinds = ["round", "thought"]
+    anchors = ["tr", "tl"]
+    return [
+        {"dialogue": bit, "balloon": kinds[index % 2], "anchor": anchors[index % 2]}
+        for index, bit in enumerate(parts)
+    ]
+
+
+def _balloons_from_reply(reply: str) -> list[dict]:
+    parsed = _json_object(reply)
+    if not parsed:
+        return []
+    found = []
+    raw = parsed.get("balloons")
+    if isinstance(raw, list):
+        for item in raw:
+            if not isinstance(item, dict):
+                continue
+            text = " ".join(str(item.get("dialogue") or item.get("text") or "").split())[:180]
+            if not text:
+                continue
+            balloon = item.get("balloon") if item.get("balloon") in BALLOON_IDS else "round"
+            anchor = item.get("anchor") if item.get("anchor") in ANCHOR_IDS else "tr"
+            found.append({"dialogue": text, "balloon": balloon, "anchor": anchor})
+            if len(found) >= 3:
+                break
+    if found:
+        return found
+    text = " ".join(str(parsed.get("dialogue") or "").split())[:180]
+    if not text:
+        return []
+    balloon = parsed.get("balloon") if parsed.get("balloon") in BALLOON_IDS else "round"
+    anchor = parsed.get("anchor") if parsed.get("anchor") in ANCHOR_IDS else "tr"
+    return [{"dialogue": text, "balloon": balloon, "anchor": anchor}]
+
+
+def _elements_from_balloons(balloons: list[dict]) -> list[dict]:
+    spots = [(0.46, 0.06), (0.08, 0.34), (0.28, 0.62)]
+    seeded = []
+    for index, item in enumerate(balloons):
+        x, y = spots[index % len(spots)]
+        seeded.append(
+            {
+                "id": f"balloon-{index + 1}",
+                "kind": "balloon",
+                "text": item["dialogue"],
+                "balloon": item["balloon"],
+                "x": x,
+                "y": y,
+                "w": 0.46,
+                "h": 0.22,
+            }
+        )
+    return _clean_elements(seeded)
 
 
 def _seed_elements(panel: dict) -> list[dict]:

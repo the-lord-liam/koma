@@ -2858,6 +2858,64 @@ process.stdout.write(JSON.stringify({ report, restRight, bindRight, rightKeys: O
         self.assertIn('data-pen="el-resize"', app)
         self.assertIn('data-act="arrange-elements"', app)
 
+    def test_balloons_come_from_notes_or_the_model(self):
+        import json as payload
+
+        from koma.config import save_config
+
+        page, panel_id = self._fresh_panel("Letter")
+        self.studio.page_update({"id": page["id"], "notes": "The runner stops. The pier is quiet."})
+        self.studio.panel_update({"id": panel_id, "action": "Aki looks back"})
+        saved = os.environ.pop("XAI_API_KEY", None)
+        calls = {"n": 0}
+        original = self.studio.client.complete
+
+        class BalloonClient(FakeClient):
+            def complete(self, messages, model=None):
+                calls["n"] += 1
+                return payload.dumps(
+                    {"balloons": [{"dialogue": "Wait for me.", "balloon": "shout", "anchor": "bl"}]}
+                )
+
+        try:
+            def complete(messages, model=None):
+                calls["n"] += 1
+                return original(messages, model)
+
+            self.studio.client.complete = complete
+            local = self.studio.panel_letter({"id": panel_id})
+            self.assertEqual(local["source"], "template")
+            self.assertEqual(calls["n"], 0)
+            row = self._panel_row(local, page["id"])
+            self.assertIn("runner stops", row["dialogue"])
+            balloons = [item for item in row["elements"] if item["kind"] == "balloon"]
+            self.assertGreaterEqual(len(balloons), 2)
+            edited = [dict(item) for item in row["elements"]]
+            edited[0]["text"] = "Hold on."
+            changed = self.studio.panel_update(
+                {"id": panel_id, "elements": edited, "dialogue": "Hold on."}
+            )
+            self.assertEqual(self._panel_row(changed, page["id"])["dialogue"], "Hold on.")
+            self.assertEqual(self._panel_row(changed, page["id"])["elements"][0]["text"], "Hold on.")
+            quiet_page, quiet_id = self._fresh_panel("Quiet")
+            quiet = self.studio.panel_letter({"id": quiet_id})
+            self.assertEqual(self._panel_row(quiet, quiet_page["id"])["dialogue"], "What happens in this panel?")
+            self.studio.client = BalloonClient()
+            save_config({"api_key": "test-key"})
+            spoken = self.studio.panel_letter({"id": panel_id})
+            self.assertEqual(spoken["source"], "ai")
+            self.assertGreaterEqual(calls["n"], 1)
+            heard = self._panel_row(spoken, page["id"])
+            self.assertEqual(heard["dialogue"], "Wait for me.")
+            self.assertEqual(heard["balloon"], "shout")
+            self.assertEqual(heard["balloonAnchor"], "bl")
+        finally:
+            if saved is not None:
+                os.environ["XAI_API_KEY"] = saved
+        app = (Path(__file__).resolve().parents[1] / "ui" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("AI text bubbles", app)
+        self.assertIn("panel notes", app)
+
     def fail_transport(self, method, url, headers, body):
         raise AssertionError("provider should not call the network")
 
