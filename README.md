@@ -2,11 +2,11 @@
 
 A free, local, AI-powered manga and illustration studio for Ubuntu. Free and open source (MIT).
 
+<p align="center"><img src="docs/page.png" width="900" alt="Koma page editor"></p>
+
 > **Heads up:** work in progress. Stuff may break or change. Use at your own risk.
 
 Koma is also a concept project: an idea of what a free, local, AI-powered studio could be.
-
-<p align="center"><img src="docs/home.png" width="900" alt="Koma home: manga canvas and illustration canvas"></p>
 
 ## Quick start
 
