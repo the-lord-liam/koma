@@ -21,6 +21,7 @@ from koma.ai import AIError, Client
 from koma.compose import render_page
 from koma.config import load_config, public_settings, save_config
 from koma.formats import FormatError, catalog as format_catalog, project_pixels, resolve_format
+from koma.ink import clean_sketch, load_png, png_bytes
 from koma.layouts import LAYOUTS, LayoutError, assist_divide, place, reflow_after_delete, to_stored_line
 from koma.lines import extract_lines, strength_of
 from koma.media import media_url, save_image, unlink
@@ -2591,6 +2592,43 @@ class Studio:
         self.store.touch(project["id"])
         return self._pack(project["id"])
 
+    def _has_xai_key(self) -> bool:
+        return bool(str(load_config().get("api_key") or "").strip())
+
+    def panel_draw_live(self, params: dict) -> dict:
+        """Live preview for the Draw tool. A key asks for a picture. Otherwise the lines are cleaned here."""
+        panel_id = params["id"]
+        self._panel_bundle(panel_id)
+        sketch = load_png(str(params.get("png") or ""))
+        try:
+            if self._has_xai_key():
+                try:
+                    data = self._draw_from_sketch(panel_id, sketch)
+                    return {"source": "ai", "png": base64.b64encode(data).decode("ascii")}
+                except AIError as error:
+                    if "API key" not in str(error):
+                        raise
+            cleaned = clean_sketch(sketch)
+            try:
+                return {"source": "lines", "png": base64.b64encode(png_bytes(cleaned)).decode("ascii")}
+            finally:
+                cleaned.close()
+        finally:
+            sketch.close()
+
+    def _draw_from_sketch(self, panel_id: str, sketch: Image.Image) -> bytes:
+        path = str(save_image(png_bytes(sketch)))
+        saved = ""
+        try:
+            built, _project = self._panel_build(panel_id, sketch=path)
+            saved = self._imagine(built["prompt"], built["aspect"], built["refs"])
+            return Path(saved).read_bytes()
+        finally:
+            if path:
+                unlink(path)
+            if saved and saved != path:
+                unlink(saved)
+
     def panel_sketch(self, params: dict) -> dict:
         panel, _page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
         raw = str(params.get("png") or "").strip()
@@ -3406,6 +3444,7 @@ ROUTES = {
     "panel.separate": Studio.panel_separate,
     "panel.letter": Studio.panel_letter,
     "panel.sketch": Studio.panel_sketch,
+    "panel.draw_live": Studio.panel_draw_live,
     "panel.lines": Studio.panel_lines,
     "panel.delete_ref": Studio.panel_delete_ref,
     "volume.create": Studio.volume_create,

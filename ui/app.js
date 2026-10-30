@@ -54,6 +54,8 @@ const state = {
   selectedBit: null,
   botBox: null,
   sketchPreview: "",
+  drawSketch: "",
+  drawPreview: "",
   lassoPath: [],
   botMessages: [],
   botDraft: "",
@@ -259,6 +261,7 @@ function render() {
   requestAnimationFrame(() => {
     paintDivide();
     restoreSketch();
+    restoreDraw();
     if (window.mountMeshViewers) mountMeshViewers();
   });
   if (state.view === "pages" && state.panelId && state.pageTool === "lasso") refreshPreview();
@@ -282,7 +285,7 @@ function paintHelp() {
       <ul>
         <li><kbd>?</kbd> Show or hide this list</li>
         <li><kbd>R</kbd> Open the reference board for this book</li>
-        <li><kbd>1</kbd>–<kbd>7</kbd> Lasso, Select, Text, Sketch, Effects, Imagine, Lines</li>
+        <li><kbd>1</kbd>–<kbd>8</kbd> Lasso, Select, Text, Sketch, Effects, Imagine, Lines, Draw</li>
         <li><kbd>Ctrl</kbd>+<kbd>Z</kbd> Undo a page edit</li>
         <li><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Z</kbd> Redo</li>
         <li><kbd>[</kbd> <kbd>]</kbd> Move the selected panel earlier or later</li>
@@ -1710,6 +1713,7 @@ const PAGE_TOOLS = [
   ["vfx", "Effects"],
   ["imagine", "Imagine"],
   ["lines", "Lines"],
+  ["draw", "Draw"],
 ];
 
 const VIBES = ["Screentone", "Speed lines", "Rain", "Night", "Dust", "Spark", "Quiet", "Harsh light"];
@@ -1738,6 +1742,7 @@ function toolProps(panel) {
   if (state.pageTool === "sketch") return sketchProps(panel);
   if (state.pageTool === "vfx") return vibeProps(panel);
   if (state.pageTool === "lines") return linesProps(panel);
+  if (state.pageTool === "draw") return drawProps(panel);
   return lassoProps(panel);
 }
 
@@ -1880,6 +1885,18 @@ function textProps(panel) {
     </label>
     <button type="button" class="rail-go" data-act="make-balloon" data-id="${esc(panel.id)}" ${state.busy ? "disabled" : ""}>AI text bubbles</button>
     <p class="meta">Lettering stays on the page. It is not drawn into the art.</p>
+  `;
+}
+
+function drawProps(panel) {
+  return `
+    <p class="rail-kicker">Draw</p>
+    <p class="meta">Panel ${panel.slot + 1}. Sketch on the left. The preview on the right updates as you draw.</p>
+    <div class="draw-pair">
+      <canvas class="draw-sketch gesture" data-pen="draw" width="320" height="480" aria-label="Sketch"></canvas>
+      <canvas class="draw-preview" width="320" height="480" aria-label="Live preview"></canvas>
+    </div>
+    <p class="meta">With a key, the preview is a drawing. Without one, it is cleaned-up line art on this machine.</p>
   `;
 }
 
@@ -2780,10 +2797,14 @@ const actions = {
     }
     const changed = state.panelId !== button.dataset.id;
     state.panelId = button.dataset.id;
-    if (changed && state.pageTool !== "imagine" && state.pageTool !== "lines") {
+    if (changed && state.pageTool !== "imagine" && state.pageTool !== "lines" && state.pageTool !== "draw") {
       state.pageTool = "lasso";
       state.lassoPath = [];
       state.selectedBit = null;
+    }
+    if (changed) {
+      state.drawSketch = "";
+      state.drawPreview = "";
     }
     render();
   },
@@ -3873,6 +3894,22 @@ function paintDivide() {
   }
 }
 
+function paintDataUrl(canvas, url) {
+  if (!canvas || !url) return;
+  const img = new Image();
+  img.onload = () => {
+    const ctx = canvas.getContext("2d");
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+  };
+  img.src = url;
+}
+
+function restoreDraw() {
+  paintDataUrl(document.querySelector(".draw-sketch"), state.drawSketch);
+  paintDataUrl(document.querySelector(".draw-preview"), state.drawPreview);
+}
+
 function restoreSketch() {
   const canvas = document.querySelector(".sketch-layer");
   if (!canvas || !state.sketchPreview) return;
@@ -3912,6 +3949,8 @@ const pen = { kind: "", pointerId: null, host: null, sketch: null, last: null };
 let sketchTimer = 0;
 let sketchFlight = null;
 let sketchWait = null;
+let drawTimer = 0;
+let drawToken = 0;
 
 function penPoint(host, event) {
   const rect = host.getBoundingClientRect();
@@ -3949,7 +3988,7 @@ function onPenDown(event) {
   pen.pointerId = event.pointerId;
   pen.host = pen.kind.startsWith("divide") ? (host.closest(".divide-layer") || host) : host;
   pen.last = penPoint(pen.host, event);
-  if (pen.kind === "sketch") beginSketch(host, event);
+  if (pen.kind === "sketch" || pen.kind === "draw") beginSketch(host, event);
   if (pen.kind === "lasso") state.lassoPath = [pen.last];
   paintLasso();
 }
@@ -3964,12 +4003,13 @@ function onPenMove(event) {
     return;
   }
   const point = penPoint(pen.host, event);
-  if (pen.kind === "sketch" && pen.sketch) {
+  if ((pen.kind === "sketch" || pen.kind === "draw") && pen.sketch) {
     const canvas = pen.host;
     const ctx = pen.sketch;
     ctx.lineWidth = (1.5 + pressureOf(event) * 5) * (window.devicePixelRatio || 1);
     ctx.lineTo(point.x * canvas.width, point.y * canvas.height);
     ctx.stroke();
+    if (pen.kind === "draw") scheduleDraw();
     return;
   }
   if (pen.kind === "lasso") {
@@ -3999,6 +4039,10 @@ function onPenUp(event) {
     clearTimeout(sketchTimer);
     sketchTimer = setTimeout(sendSketch, 650);
   }
+  if (pen.kind === "draw") {
+    clearTimeout(drawTimer);
+    sendDrawPreview();
+  }
   pen.kind = "";
   pen.pointerId = null;
   pen.host = null;
@@ -4021,6 +4065,37 @@ function beginSketch(canvas, event) {
   ctx.beginPath();
   ctx.moveTo(point.x * canvas.width, point.y * canvas.height);
   pen.sketch = ctx;
+}
+
+function scheduleDraw() {
+  mirrorDraw();
+  clearTimeout(drawTimer);
+  drawTimer = setTimeout(sendDrawPreview, 320);
+}
+
+function mirrorDraw() {
+  const sketch = document.querySelector(".draw-sketch");
+  const preview = document.querySelector(".draw-preview");
+  if (!sketch || !preview) return;
+  const ctx = preview.getContext("2d");
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, preview.width, preview.height);
+  ctx.drawImage(sketch, 0, 0, preview.width, preview.height);
+}
+
+function sendDrawPreview() {
+  const sketch = document.querySelector(".draw-sketch");
+  if (!sketch || !state.panelId || !sketch.width) return;
+  state.drawSketch = sketch.toDataURL("image/png");
+  const token = ++drawToken;
+  const id = state.panelId;
+  rpc("panel.draw_live", { id, png: state.drawSketch }).then((result) => {
+    if (token !== drawToken || !result || !result.png) return;
+    state.drawPreview = "data:image/png;base64," + result.png;
+    paintDataUrl(document.querySelector(".draw-preview"), state.drawPreview);
+  }).catch((error) => {
+    if (token === drawToken) toast(error.message);
+  });
 }
 
 function sendSketch() {
@@ -4291,8 +4366,8 @@ document.addEventListener("keydown", (event) => {
       if (act) Promise.resolve(act({ dataset: { id: state.panelId, dir: event.key === "[" ? "-1" : "1" } })).catch((error) => toast(error.message || String(error)));
       return;
     }
-    const toolKeys = ["lasso", "select", "text", "sketch", "vfx", "imagine", "lines"];
-    const toolIndex = "1234567".indexOf(event.key);
+    const toolKeys = ["lasso", "select", "text", "sketch", "vfx", "imagine", "lines", "draw"];
+    const toolIndex = "12345678".indexOf(event.key);
     if (toolIndex >= 0) {
       event.preventDefault();
       const act = actions["pick-tool"];
