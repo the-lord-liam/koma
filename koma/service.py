@@ -22,6 +22,7 @@ from koma.compose import render_page
 from koma.config import load_config, public_settings, save_config
 from koma.formats import FormatError, catalog as format_catalog, project_pixels, resolve_format
 from koma.ink import blur_region, clean_sketch, load_png, marks_of, mask_from_marks, paste_region, png_bytes
+from koma.localdraw import LocalDrawError, img2img, loopback_url
 from koma.layouts import LAYOUTS, LayoutError, assist_divide, place, reflow_after_delete, to_stored_line
 from koma.lines import extract_lines, strength_of
 from koma.media import media_url, save_image, unlink
@@ -778,6 +779,11 @@ class Studio:
             updates["mesh_provider"] = provider
         if "meshCommand" in params or "mesh_command" in params:
             updates["mesh_command"] = params.get("meshCommand", params.get("mesh_command"))
+        backend = params.get("drawBackend", params.get("draw_backend"))
+        if backend in {"auto", "xai", "local", "lines"}:
+            updates["draw_backend"] = backend
+        if "localDrawUrl" in params or "local_draw_url" in params:
+            updates["local_draw_url"] = params.get("localDrawUrl", params.get("local_draw_url"))
         if params.get("clearMeshyKey"):
             updates["meshy_key"] = ""
         elif isinstance(params.get("meshyKey"), str) and params["meshyKey"].strip():
@@ -2613,18 +2619,57 @@ class Studio:
     def _has_xai_key(self) -> bool:
         return bool(str(load_config().get("api_key") or "").strip())
 
+    def _local_draw_url(self, data: dict | None = None) -> str:
+        data = data or load_config()
+        url = str(data.get("local_draw_url") or "").strip()
+        if not url:
+            return ""
+        try:
+            return loopback_url(url)
+        except LocalDrawError:
+            return ""
+
+    def _draw_plan(self) -> tuple[str, str]:
+        """Pick ai, local, or lines. Auto uses a key, then a local address, then cleaned lines."""
+        data = load_config()
+        mode = str(data.get("draw_backend") or "auto")
+        if mode not in {"auto", "xai", "local", "lines"}:
+            mode = "auto"
+        has_key = bool(str(data.get("api_key") or "").strip())
+        url = self._local_draw_url(data)
+        if mode == "lines":
+            return mode, "lines"
+        if mode == "xai":
+            return mode, "ai" if has_key else "lines"
+        if mode == "local":
+            return mode, "local" if url else "lines"
+        if has_key:
+            return mode, "ai"
+        if url:
+            return mode, "local"
+        return mode, "lines"
+
     def panel_draw_live(self, params: dict) -> dict:
-        """Live preview for the Draw tool. A key asks for a picture. Otherwise the lines are cleaned here."""
+        """Live preview. Does not store a version. xAI, a local server, or cleaned lines."""
         panel_id = params["id"]
         self._panel_bundle(panel_id)
         sketch = load_png(str(params.get("png") or ""))
         try:
-            if self._has_xai_key():
+            mode, choice = self._draw_plan()
+            if choice == "ai":
                 try:
                     data = self._draw_from_sketch(panel_id, sketch)
                     return {"source": "ai", "png": base64.b64encode(data).decode("ascii")}
                 except AIError as error:
                     if "API key" not in str(error):
+                        raise
+                    choice = "local" if mode == "auto" and self._local_draw_url() else "lines"
+            if choice == "local":
+                try:
+                    data = self._draw_local(panel_id, sketch)
+                    return {"source": "local", "png": base64.b64encode(data).decode("ascii")}
+                except LocalDrawError:
+                    if mode == "local":
                         raise
             cleaned = clean_sketch(sketch)
             try:
@@ -2633,6 +2678,38 @@ class Studio:
                 cleaned.close()
         finally:
             sketch.close()
+
+    def panel_draw_commit(self, params: dict) -> dict:
+        """Store the current Draw picture on the panel. Does not call a model."""
+        _panel, page, _chapter, project, _characters, _location, _slot = self._panel_bundle(params["id"])
+        image = load_png(str(params.get("png") or ""))
+        rgb = image.convert("RGB")
+        try:
+            data = png_bytes(rgb)
+        finally:
+            image.close()
+            if rgb is not image:
+                rgb.close()
+        path = str(save_image(data))
+        self._remember(page["id"])
+        self.store.add_version(params["id"], path, "", "Draw")
+        self.store.touch(project["id"])
+        return self._pack(project["id"])
+
+    def _draw_local(self, panel_id: str, sketch: Image.Image) -> bytes:
+        url = self._local_draw_url()
+        if not url:
+            raise LocalDrawError("The local draw address has to stay on this machine.")
+        panel = self.store.get_panel(panel_id)
+        prompt = str(panel.get("prompt") or panel.get("action") or "").strip()
+        return img2img(
+            url,
+            png_bytes(sketch),
+            prompt,
+            width=sketch.size[0],
+            height=sketch.size[1],
+            transport=getattr(self, "_local_transport", None),
+        )
 
     def panel_lasso(self, params: dict) -> dict:
         """Redraw the marked part of a panel. A key draws it. Otherwise that part is softened."""
@@ -3695,6 +3772,7 @@ ROUTES = {
     "panel.letter": Studio.panel_letter,
     "panel.sketch": Studio.panel_sketch,
     "panel.draw_live": Studio.panel_draw_live,
+    "panel.draw_commit": Studio.panel_draw_commit,
     "panel.lasso": Studio.panel_lasso,
     "panel.lines": Studio.panel_lines,
     "panel.delete_ref": Studio.panel_delete_ref,
