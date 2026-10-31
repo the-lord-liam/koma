@@ -57,9 +57,9 @@ Built by [Liam](https://x.com/the_lord_liam) together with Grok Bot and Grok.
 
 Contact the creator: <a href="https://x.com/the_lord_liam"><img src="docs/x-icon.png" width="22" height="22" alt="X"></a>
 
-## Fork freely
+## Free forever. Make it yours.
 
-Fork it, remix it, steal the idea, build your own. No need to ask. Show me what you make!
+Koma is 100% free and open. Take it, remix it, steal the idea, sell it, train AI on it, build something bigger. No permission, no strings. Go create, and show the world what you make!
 
 ## License
 
